@@ -4,13 +4,30 @@ Pars Takımı için oluşturulmuş çelik kubbe hava savunma sistemi.
 
 ---
 
+## Ekran Görüntüleri
+
+![YKI Arayüz 1](imgs/1.png)
+![YKI Arayüz 2](imgs/2.png)
+![YKI Arayüz 3](imgs/3.png)
+![YKI Arayüz 4](imgs/4.png)
+
+---
+
+## Proje Klasör Yapısı
+
+Ana dizin yapımız şu şekildedir:
+
+- **`YKI/`**: Yer Kontrol İstasyonu projesi. (Node.js arka uç, HTML/JS/CSS ön uç ve simülasyon kodları)
+- **`Object_detection/`**: YOLO tabanlı hedef tespiti, model eğitimi ve TensorRT dönüştürme betikleri.
+- **`control_code/`**: İHA veya sistemin alt uçuş denetleyicisi ile haberleşme, komut işleme ve MQTT haberleşmesi.
+
+---
+
 # YKI — Yer Kontrol İstasyonu
 
 **TEKNOFEST Çelik Kubbe Hava Savunma Sistemi | Pars Takımı**
 
 QGroundControl tarzı, web tabanlı yer kontrol istasyonu. Webcam / RTSP / MJPEG kamera desteği, gerçek zamanlı JSON telemetri, uçuş enstrümanları (yapay ufuk + pusula) ve TCP komut kanalı içerir.
-
----
 
 ## Hızlı Başlangıç
 
@@ -26,7 +43,7 @@ npm install
 node server.js
 
 # 4. Tarayıcıda aç
-http://localhost:3000
+# Tarayıcınızda http://localhost:3000 adresine gidin
 ```
 
 ---
@@ -70,17 +87,6 @@ Ayarlar → Kamera Kaynağı bölümünden üç mod:
 
 ---
 
-## Uçuş Enstrümanları
-
-Dashboard'da **Enstrümanlar** butonuna tıklayarak açılır:
-
-- **Yapay Ufuk (Attitude Indicator)**: Roll ve Pitch açılarını gösterir. Mavi = gökyüzü, kahverengi = yer.
-- **Pusula (Heading Indicator)**: Yaw/Heading açısını gösterir, N/E/S/W yönleri ile.
-
-Enstrümanlar telemetri verisindeki `pitch`, `roll`, `yaw`/`heading` alanlarını kullanır.
-
----
-
 ## Telemetri Protokolü (UDP → Port 5001)
 
 RPi5'ten her saniye gönderilecek JSON paketi:
@@ -117,52 +123,9 @@ RPi5'ten ACK:
 {"ack": "abc123", "status": "ok"}
 ```
 
-> **Not:** RPi5 bağlı olmadığında `EHOSTUNREACH` hatası görünür — bu normaldir. Sistem her 5 saniyede otomatik yeniden bağlanmayı dener. Sadece ilk denemede uyarı gösterilir.
-
 ---
 
-## Yapılandırma
-
-İlk çalıştırmada `backend/yki_config.json` otomatik oluşturulur.
-Arayüz üzerinden (Ayarlar sayfası) veya dosyayı elle düzenleyerek yapılandırılabilir:
-
-```json
-{
-  "rpi": {
-    "ip": "192.168.1.100",
-    "tcpPort": 5000,
-    "udpPort": 5001
-  },
-  "video": {
-    "rtspUrl": "rtsp://192.168.1.100:8554/camera",
-    "resolution": "1280x720",
-    "fps": 30,
-    "bitrate": 800
-  },
-  "server": {
-    "httpPort": 3000,
-    "videoWsPort": 8081
-  },
-  "vehicle": {
-    "name": "Çelik Kubbe",
-    "teamName": "Pars Takımı"
-  }
-}
-```
-
----
-
-## Proje Klasör Yapısı
-
-Ana dizin yapımız şu şekildedir:
-
-- **`YKI/`**: Yer Kontrol İstasyonu projesi. (Node.js arka uç, HTML/JS/CSS ön uç ve simülasyon kodları)
-- **`Object_detection/`**: YOLO tabanlı hedef tespiti, model eğitimi ve TensorRT dönüştürme betikleri.
-- **`control_code/`**: İHA veya sistemin alt uçuş denetleyicisi ile haberleşme, komut işleme ve MQTT haberleşmesi.
-
----
-
-### YKI Klasör Yapısı
+## Klasör Yapısı (YKI)
 
 ```
 YKI/
@@ -189,37 +152,3 @@ YKI/
 ├── telemetry_sim.py        ← Test simülatörü
 └── README.md
 ```
-
----
-
-## Test (RPi5 Olmadan)
-
-### Telemetri simülatörü (pitch/roll/yaw dahil)
-
-```bash
-python3 ~/Documents/Projeler/Pars_Takimi/YKI/telemetry_sim.py
-# veya uzak IP ile:
-python3 telemetry_sim.py 192.168.1.50 5001
-```
-
-### Test RTSP stream
-
-```bash
-# Test deseni ile:
-ffmpeg -re -f lavfi -i testsrc=size=1280x720:rate=30 \
-  -f rtsp rtsp://localhost:8554/camera
-
-# Video dosyasından:
-ffmpeg -re -i video.mp4 -f rtsp rtsp://localhost:8554/camera
-```
-
----
-
-## Sistem Gereksinimleri
-
-| Bileşen | Versiyon |
-|---------|----------|
-| Node.js | v12+ (v18+ önerilir) |
-| FFmpeg | v4+ |
-| Python | v3.6+ (sadece simülatör için) |
-| Tarayıcı | Chrome / Firefox / Edge |
