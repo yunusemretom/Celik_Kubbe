@@ -19,7 +19,7 @@ Ana dizin yapımız şu şekildedir:
 
 - **`YKI/`**: Yer Kontrol İstasyonu projesi. (Node.js arka uç, HTML/JS/CSS ön uç ve simülasyon kodları)
 - **`Object_detection/`**: YOLO tabanlı hedef tespiti, model eğitimi ve TensorRT dönüştürme betikleri.
-- **`control_code/`**: İHA veya sistemin alt uçuş denetleyicisi ile haberleşme, komut işleme ve MQTT haberleşmesi.
+- **`control_code/`**:Raspberry- ESP232 denetleyicisi ile haberleşme, komut işleme .
 
 ---
 
