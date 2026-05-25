@@ -257,10 +257,11 @@
           <div class="form-group">
             <label>Kaynak Tipi</label>
             <select id="cfg-camera-source">
-              <option value="webcam">🎥 Web Kamera (Yerel USB/Dahili)</option>
-              <option value="rtsp">📡 RTSP Stream</option>
-              <option value="mjpeg">🌐 MJPEG HTTP Stream</option>
-            </select>
+  <option value="webcam">🎥 Web Kamera (Yerel USB/Dahili)</option>
+  <option value="device">📷 V4L2 Cihaz (Arducam IMX296)</option>
+  <option value="rtsp">📡 RTSP Stream</option>
+  <option value="mjpeg">🌐 MJPEG HTTP Stream</option>
+</select>
           </div>
 
           <!-- Webcam -->
@@ -281,7 +282,18 @@
             </div>
             <div class="url-info-box" id="rtsp-parse-box"></div>
           </div>
-
+<!-- V4L2 -->
+<div id="camera-device-section" class="hidden">
+  <div class="form-group">
+    <label>Cihaz Yolu</label>
+    <select id="cfg-v4l2-device">
+      <option value="/dev/video0">/dev/video0 (varsayılan)</option>
+    </select>
+  </div>
+  <button id="btn-enumerate-v4l2" class="btn btn-secondary full-width">
+    🔍 V4L2 Cihazları Listele
+  </button>
+</div>
           <!-- MJPEG -->
           <div id="camera-mjpeg-section" class="hidden">
             <div class="form-group">
@@ -336,7 +348,37 @@
             <input type="text" id="cfg-team-name" placeholder="Pars Takımı" />
           </div>
         </div>
-
+<div class="settings-card">
+  <h2 class="settings-card-title">🎮 Operasyon Modu</h2>
+  <div class="form-group">
+    <label>Görev Modu</label>
+    <select id="cfg-op-mode">
+      <option value="manual">✋ Manuel (Aşama 1)</option>
+      <option value="autonomous_swarm">🤖 Otonom Sürü (Aşama 2)</option>
+      <option value="autonomous_layered">🎯 Otonom Katmanlı (Aşama 3)</option>
+    </select>
+  </div>
+  <div class="form-group">
+    <label>Ekran Overlay Seçimi</label>
+    <div class="toggle-row">
+      <label class="toggle-label">
+        <input type="checkbox" id="cfg-show-crosshair" checked /> Nişangah
+      </label>
+      <label class="toggle-label">
+        <input type="checkbox" id="cfg-show-bbox" checked /> YOLO Kutuları
+      </label>
+      <label class="toggle-label">
+        <input type="checkbox" id="cfg-show-lidar" checked /> LiDAR Mesafesi
+      </label>
+      <label class="toggle-label">
+        <input type="checkbox" id="cfg-show-tracking-id" checked /> Takip ID
+      </label>
+    </div>
+  </div>
+  <button id="btn-apply-display" class="btn btn-primary full-width">
+    Modu Uygula
+  </button>
+</div>
         <div class="settings-card">
           <h2 class="settings-card-title">🖥️ Sunucu Durumu</h2>
           <div class="server-info" id="server-info">

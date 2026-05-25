@@ -6,6 +6,7 @@ class SettingsPage {
     this._bindCameraSource();
     this._bindSave();
     this._bindApplyCamera();
+    this._bindApplyDisplay();
     this._bindEvents();
   }
 
@@ -27,6 +28,7 @@ class SettingsPage {
 
   _updateCameraUI(source) {
     document.getElementById('camera-webcam-section').style.display = source === 'webcam' ? '' : 'none';
+    document.getElementById('camera-device-section').classList.toggle('hidden', source !== 'device');
     document.getElementById('camera-rtsp-section').classList.toggle('hidden', source !== 'rtsp');
     document.getElementById('camera-mjpeg-section').classList.toggle('hidden', source !== 'mjpeg');
   }
@@ -97,6 +99,68 @@ class SettingsPage {
         }
         window.showToast('Kamera kaynağı değiştirildi: ' + source.toUpperCase(), 'success');
       }
+    });
+     // V4L2 cihazları listele butonuna tıklanınca _enumerateV4L2Devices metodunu çağırılır
+    const v4l2Btn = document.getElementById('btn-enumerate-v4l2');
+    if (v4l2Btn) {
+      v4l2Btn.addEventListener('click', () => this._enumerateV4L2Devices());
+    }
+  }
+
+  //V4L2 uyumlu kamera cihazlarını backend API'den çekip dropdown listesine doldurur
+  async _enumerateV4L2Devices() {
+    const btn = document.getElementById('btn-enumerate-v4l2');
+    if (btn) btn.disabled = true; // Listelenirken butona tekrar basılmasını engelle
+    try {
+      const res  = await fetch('/api/devices/video'); // Backend'den cihaz listesini iste
+      const data = await res.json();
+      const devices = data.devices || [];
+      const sel = document.getElementById('cfg-v4l2-device');
+      if (sel) {
+        sel.innerHTML = devices.length
+          ? devices.map((d) => `<option value="${d.path}">${d.path} — ${d.name}</option>`).join('')
+          : '<option value="/dev/video0">/dev/video0 (varsayılan)</option>'; // Cihaz bulunamazsa varsayılanı göster
+      }
+      window.showToast(`${devices.length} V4L2 kamera bulundu`, 'success');
+    } catch (e) {
+      window.showToast('Cihaz listesi alınamadı', 'error');
+    } finally {
+      if (btn) btn.disabled = false; // İşlem bitince butonu tekrar aktif et
+    }
+  }
+
+  // Operasyon modunu ve ekran overlay seçimlerini uygular
+  // Mod: Manuel (Aşama 1), Otonom Sürü (Aşama 2), Otonom Katmanlı (Aşama 3)
+  // Overlay: Nişangah, YOLO kutuları, LiDAR mesafesi, Takip ID göster/gizle
+  _bindApplyDisplay() {
+    const btn = document.getElementById('btn-apply-display');
+    if (!btn) return;
+    btn.addEventListener('click', () => {
+      // Seçilen modu ve overlay checkbox değerlerini oku
+      const mode           = document.getElementById('cfg-op-mode').value;
+      const showCrosshair  = document.getElementById('cfg-show-crosshair').checked;
+      const showBbox       = document.getElementById('cfg-show-bbox').checked;
+      const showLidar      = document.getElementById('cfg-show-lidar').checked;
+      const showTrackingId = document.getElementById('cfg-show-tracking-id').checked;
+
+      // crosshairi anında göster veya gizle
+      const crosshair = document.getElementById('crosshair');
+      if (crosshair) crosshair.style.display = showCrosshair ? '' : 'none';
+
+      // Dashboard'a overlay ayarlarını iletir
+      if (window.dashboard) {
+        window.dashboard.overlaySettings = { showBbox, showLidar, showTrackingId };
+      }
+
+      // Seçilen operasyon modunu gönder
+      ykiWS.send({ type: 'settings_update', settings: { operation: { mode } } });
+
+      const modeLabels = {
+        manual:             'Manuel (Aşama 1)',
+        autonomous_swarm:   'Otonom Sürü (Aşama 2)',
+        autonomous_layered: 'Otonom Katmanlı (Aşama 3)',
+      };
+      window.showToast(`Mod: ${modeLabels[mode]}`, 'success');
     });
   }
 
