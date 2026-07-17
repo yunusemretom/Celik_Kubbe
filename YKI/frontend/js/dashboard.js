@@ -278,6 +278,7 @@ class Dashboard {
 
     this._bindUI();
     this._bindEvents();
+    this._setupModePanel();
   }
 
   _bindUI() {
@@ -293,6 +294,38 @@ class Dashboard {
       else document.exitFullscreen();
     });
   }
+
+  _setupModePanel() {
+  const modeSelect = document.getElementById('cfg-op-mode');
+  if (!modeSelect) return;
+
+  const modeCard = modeSelect.closest('.settings-card');
+  if (!modeCard) return;
+
+  modeCard.id = 'mode-panel';
+  modeCard.classList.add('instrument-panel', 'hidden');
+
+  const oldTitle = modeCard.querySelector('.settings-card-title');
+  if (oldTitle) oldTitle.remove();
+
+  const header = document.createElement('div');
+  header.className = 'inst-panel-header';
+  header.innerHTML = `<span>OPERASYON MODU</span><button id="btn-close-mode-panel">✕</button>`;
+  modeCard.insertBefore(header, modeCard.firstChild);
+
+  document.querySelector('.camera-container').appendChild(modeCard);
+
+  const controls = document.querySelector('.camera-controls');
+  const modeBtn = document.createElement('button');
+  modeBtn.id = 'btn-mode-panel';
+  modeBtn.className = 'cam-btn';
+  modeBtn.innerHTML = `<svg viewBox="0 0 20 20" width="14"><circle cx="10" cy="10" r="8" stroke="currentColor" stroke-width="2" fill="none"/><path d="M10 5v5l3 3" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg> Mod`;
+  controls.appendChild(modeBtn);
+
+  modeBtn.addEventListener('click', () => modeCard.classList.toggle('hidden'));
+  header.querySelector('#btn-close-mode-panel')
+    .addEventListener('click', () => modeCard.classList.add('hidden'));
+}
 
   _bindEvents() {
     ykiWS.on('init', (msg) => {
