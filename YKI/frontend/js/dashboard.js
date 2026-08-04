@@ -313,7 +313,9 @@ class Dashboard {
   header.innerHTML = `<span>OPERASYON MODU</span><button id="btn-close-mode-panel">✕</button>`;
   modeCard.insertBefore(header, modeCard.firstChild);
 
-  document.querySelector('.camera-container').appendChild(modeCard);
+  const sidePanelStack = document.getElementById('side-panel-stack')
+    || document.querySelector('.camera-container');
+  sidePanelStack.appendChild(modeCard);
 
   const controls = document.querySelector('.camera-controls');
   const modeBtn = document.createElement('button');

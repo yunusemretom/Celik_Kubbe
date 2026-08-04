@@ -642,12 +642,24 @@ select option { background: var(--bg-secondary); }
 /* ═══════════════════════════════════════════════════════════════
    INSTRUMENT PANEL
    ═══════════════════════════════════════════════════════════════ */
-.instrument-panel {
+.side-panel-stack {
   position: absolute;
   top: 16px;
   right: 16px;
-  width: 212px;
   z-index: 20;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 12px;
+  max-height: calc(100% - 32px);
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding-right: 2px;
+}
+.instrument-panel {
+  position: static;
+  width: 212px;
+  flex-shrink: 0;
   background: rgba(12, 14, 16, 0.88);
   backdrop-filter: blur(14px);
   border: 1px solid var(--border-light);
@@ -747,4 +759,3 @@ select option { background: var(--bg-secondary); }
 .url-info-row { display: flex; justify-content: space-between; }
 .url-info-key { color: var(--text-muted); }
 .url-info-val { color: var(--accent); }
-

@@ -140,26 +140,28 @@
           <div class="ch-center"></div>
         </div>
 
-        <!-- Instrument Panel -->
-        <div id="instrument-panel" class="instrument-panel hidden">
-          <div class="inst-panel-header">
-            <span>UÇUŞ ENSTRÜMANLARı</span>
-            <button id="btn-close-instruments">✕</button>
-          </div>
-          <div class="inst-section">
-            <div class="inst-label">YAPAY UFUK</div>
-            <canvas id="ai-canvas" width="180" height="180"></canvas>
-            <div class="inst-values">
-              <div class="inst-val-row"><span>PITCH</span><span class="inst-val" id="inst-pitch">0.0°</span></div>
-              <div class="inst-val-row"><span>ROLL</span><span class="inst-val" id="inst-roll">0.0°</span></div>
+        <div id="side-panel-stack" class="side-panel-stack">
+          <!-- Instrument Panel -->
+          <div id="instrument-panel" class="instrument-panel hidden">
+            <div class="inst-panel-header">
+              <span>UÇUŞ ENSTRÜMANLARı</span>
+              <button id="btn-close-instruments">✕</button>
             </div>
-          </div>
-          <div class="inst-section">
-            <div class="inst-label">PUSULA / HDG</div>
-            <canvas id="compass-canvas" width="180" height="180"></canvas>
-            <div class="inst-values">
-              <div class="inst-val-row"><span>HDG</span><span class="inst-val" id="inst-hdg">000°</span></div>
-              <div class="inst-val-row"><span>YAW</span><span class="inst-val" id="inst-yaw">0.0°</span></div>
+            <div class="inst-section">
+              <div class="inst-label">YAPAY UFUK</div>
+              <canvas id="ai-canvas" width="180" height="180"></canvas>
+              <div class="inst-values">
+                <div class="inst-val-row"><span>PITCH</span><span class="inst-val" id="inst-pitch">0.0°</span></div>
+                <div class="inst-val-row"><span>ROLL</span><span class="inst-val" id="inst-roll">0.0°</span></div>
+              </div>
+            </div>
+            <div class="inst-section">
+              <div class="inst-label">PUSULA / HDG</div>
+              <canvas id="compass-canvas" width="180" height="180"></canvas>
+              <div class="inst-values">
+                <div class="inst-val-row"><span>HDG</span><span class="inst-val" id="inst-hdg">000°</span></div>
+                <div class="inst-val-row"><span>YAW</span><span class="inst-val" id="inst-yaw">0.0°</span></div>
+              </div>
             </div>
           </div>
         </div>
