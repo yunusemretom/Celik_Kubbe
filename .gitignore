@@ -74,3 +74,10 @@ secrets.yaml
 
 # Notebook checkpoints
 .ipynb_checkpoints/
+
+# YOLO models
+*.pt
+*.onnx
+*.engine
+Object_detection/rf_merge/
+
