@@ -44,10 +44,19 @@ Aksi halde Python tarafındaki renk eşikleme yanlış pozitif üretir.
 ## Hedefler
 
 Yarışma tarafından verilen 4 OBJ maketi (`Assets/SteelDome/Models/`):
-balistik füze, helikopter, F16, mini/mikro İHA. Hepsi gerçek maket ölçeğinde
-(0.3–0.6 m), burnu +Z, füze dik duruyor.
+balistik füze, helikopter, F16, mini/mikro İHA. Burnu +Z, füze dik duruyor.
+
+Maketler görünürlük için **1.5 kat** büyütüldü (`Hedef_*.prefab` → `Model`
+ölçeği). Ortaya çıkan boyutlar: füze 0.33 × 0.75, F16 0.45 × 0.75,
+helikopter 0.59 × 0.87, İHA 0.42 × 0.56 m — gerçek maket ölçeğinin (0.3–0.6 m)
+biraz üstünde. Şartname ölçeğine dönmek için `Model` ölçeğini 1'e çekin.
+
+**Balon büyütülmedi**: çapı 0.28 m ve Python'un menzil kestirimi
+(`BALLOON_DIAMETER_M`) buna bağlı. Balonu büyütürseniz o sabiti de güncelleyin.
 
 Her hedef Şekil 3'teki düzende: direkte üstte maket, altında **kırmızı balon**.
+Maketin alt kenarı balonun üstünden en az 5 cm yukarıda tutulur — büyütme
+sırasında sarkarsa balonu gölgeler ve balonu vurmak imkânsız hale gelir.
 
 > **Şartnamenin kurduğu tuzak:** dost maketler mavi, düşman maketler kırmızıdır —
 > ama balonlar **hepsinde kırmızıdır** ve imha yalnızca balondan sayılır.
@@ -59,13 +68,23 @@ Her hedef Şekil 3'teki düzende: direkte üstte maket, altında **kırmızı ba
 
 | Aşama | Şartname | Kurulum |
 |---|---|---|
-| 1 | 6.1 | 5/10/15 m'de duran 12 hedef, zarfla verilen imha sırası, manuel mod |
+| 1 | 6.1 | 5/10/15 m'de **ray üzerinde duran** hedefler, zarfla verilen imha sırası, manuel mod |
 | 2 | 6.2 | 4 tur, turda 9 kırmızı hedef (şartname 3), otonom |
 | 3 | 6.3 | 8 tur, turda 3 düşman + 7 dost (şartname 1+2), tipe göre imha menzili |
 
 Hedef sayıları `ParkurManager` üzerinden ayarlanabilir; şartname değerleri
 3 / 3 / 1'dir. Hedefler kollara dağıtılır ve halkada rastgele — ama üst üste
 binmeyecek şekilde — konumlanır.
+
+**Aşama-1 hedefleri de rayın üzerinde durur** (`staticOnLanes`), gerçekteki gibi:
+maketler arabalarla ray üstündedir, bu aşamada araba hareket etmez. Konumlar
+kolun 5/10/15 m menzil çemberini kestiği noktalardan seçilir, dolayısıyla menzil
+tam tutar. Seçim açısal yayılıma göre yapılır ki hedefler bandın bir kenarında
+kümelenmesin, ve **atışa yasak bölgeye düşen kesişimler elenir** (`staticMaxYaw`)
+— orada duran bir hedef imha edilemeyeceği için zarf sırası tıkanırdı.
+
+Bu yüzden 5 m bandında 4 değil **3 hedef** olur: ±78°'lik sektör içinde üç kol o
+çemberi yalnızca üç noktada kesiyor. Toplam 11 hedef.
 
 Puanlama, ceza ve başarısızlık koşulları (Tablo 5/6/7) `ParkurManager` içinde
 kodlanmıştır: yanlış sıra -5, dost vurma -10, tur başına ceza tavanı 10,
@@ -105,6 +124,13 @@ gerçek çapı bilindiği için tek kamera yeter. 15 m'de 1 piksellik ölçüm h
 ## Çalıştırma
 
 Adım adım kullanım için **[KULLANIM.md](KULLANIM.md)** dosyasına bakın.
+
+> **Grafik API'si Vulkan olmalı.** Bu makinede Unity OpenGLCore ile açılıyordu ve
+> Mesa/Intel sürücüsünde Scene view render'ında kırmızı kanal her pikselde 1.0'a
+> kilitleniyordu (sahne değil, sürücü hatası; oyun kameraları etkilenmiyordu).
+> Player Settings'te API sırası `Vulkan → OpenGLCore` yapıldı; **etkili olması için
+> Unity yeniden başlatılmalı.** Ayrıntı: KULLANIM.md § 7.
+
 Kısaca: Unity'de `Assets/SteelDome/Scenes/SteelDomeSim.unity` → Play, sonra:
 
 ```bash
@@ -127,8 +153,13 @@ python3 run.py --legacy-color  # eski düz renk dedektörü
 | M | Manuel ↔ otomatik geçiş |
 | Boşluk | Ateş |
 | Esc | Acil durdur (aç/kapa) |
+| **Shift+Q** | **Simülasyondan çık** — sağ alttaki `CIKIS` butonuyla aynı, onay ister |
 
 Aynı geçiş Python'dan da yapılabilir: `client.set_stage(3)`.
+
+Çıkış `TurretHud.QuitSimulation()` üzerinden gider: önce taret durdurulur, sonra
+editörde Play modu kapatılır, derlenmiş oyunda `Application.Quit()` çağrılır —
+`Application.Quit()` tek başına editörde hiçbir şey yapmaz, o yüzden ikisi ayrı.
 
 ## Protokol
 
@@ -173,16 +204,21 @@ nokta olduğu için taret zaten oraya varıp durur.
 | `Assets/SteelDome/Scripts/FireControl.cs` | Namlu ışını, balon isabeti, atışa yasak bölge |
 | `Assets/SteelDome/Scripts/TurretHud.cs` | Operatör ekranı |
 | `bridge.py` | Soket istemcisi, piksel→açı, menzil kestirimi |
-| `tracker.py` | Balon/maket dedektörü, PID, kilitlenme durum makinesi |
+| `tracker.py` | HSV balon/maket dedektörü, PID, kilitlenme durum makinesi |
+| `yolo_detector.py` | YOLO dedektörü (`--yolo`); balon/maket eşleme, iz bazlı sınıf oylaması, SAHI |
 | `run.py` | Ana kontrol döngüsü |
 | `test_connection.py` | Köprü doğrulama testi (yalnızca stdlib) |
 
 ## Bilinen eksik
 
-**Hedef tipi sınıflandırması yok.** Şartname Aşama-3'te tipe göre farklı imha
-penceresi istiyor (F16 10-15 m, helikopter/füze 5-15 m, mini İHA 0-15 m) ve
-Yetenek 6 arayüzde sınıflandırma gösterilmesini bekliyor. Python şu an yalnızca
-dost/düşman ayrımı yapıyor, tip ayrımı yapmıyor; bu yüzden `--min-range` tek bir
-sabit eşikle çalışıyor. Çözüm bir YOLO dedektörü: `tracker.py` içindeki
-`BalloonTargetDetector.detect()` metodunu aynı imzayla değiştirmek yeterli,
-kontrol katmanına dokunmaya gerek yok.
+**Tipe göre menzil penceresi hâlâ elle veriliyor.** Şartname Aşama-3'te tipe göre
+farklı imha penceresi istiyor (F16 10-15 m, helikopter/füze 5-15 m, mini İHA
+0-15 m) ve Yetenek 6 arayüzde sınıflandırma gösterilmesini bekliyor.
+
+Tespit tarafı çözüldü: `yolo_detector.YoloTargetDetector` (`run.py --yolo
+--weights ...`) `BalloonTargetDetector` ile aynı `detect()` imzasını kullanıyor,
+kontrol katmanı değişmedi. Model hedef tipini veriyorsa tip artık `Engagement.label`
+içinde taşınıyor ve teşhis penceresinde gösteriliyor.
+
+Kalan iş: `run.py` içindeki tek `--min-range` eşiğini `label` → pencere tablosuna
+çevirmek. HSV modunda tip bilgisi olmadığı için eşik tek değer olarak kalır.

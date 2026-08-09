@@ -7,9 +7,35 @@ neden öyle kurulduğu için `README.md`'ye bakın.
 
 ## 1. Tek seferlik hazırlık
 
+HSV dedektörü için:
+
 ```bash
-pip install opencv-python numpy
+pip install "opencv-python<5" numpy
 ```
+
+YOLO dedektörü de kullanacaksanız, depo kökündeki venv'e (`uv venv` ile açıldı):
+
+```bash
+cd /home/tom/Documents/Projeler/Celik_Kubbe
+uv pip install --index-url https://download.pytorch.org/whl/cu124 torch torchvision
+uv pip install ultralytics sahi "opencv-python<5"
+```
+
+Sonra betikleri **venv'in** Python'uyla çalıştırın:
+
+```bash
+cd Similasyon_Kullanım
+../.venv/bin/python run.py --yolo --weights /yol/best.pt
+```
+
+> **cu124 neden:** sürücü 550 CUDA 12.x'e kadar destekliyor, cu130 (CUDA 13)
+> tekerlekleri sürücü 580+ ister. Sistem genelindeki kurulumda torch 2.13+cu130
+> ile torchvision 0.21 eşleşmediği için `operator torchvision::nms does not exist`
+> hatası çıkıyor — YOLO'yu venv'den çalıştırın.
+>
+> **`opencv-python<5` neden:** opencv-python 5.0 tekerleği GUI backend'i olmadan
+> geliyor, `cv2.imshow` "The function is not implemented" hatası veriyor.
+> (`run.py` bu durumda çökmüyor, yalnızca pencereyi kapatıp takibe devam ediyor.)
 
 Unity tarafında hiçbir paket kurulumu gerekmiyor. Unity 6000.5.7f1 ile
 `/home/tom/Setup Guide In-Editor Tutorial/` projesini açın.
@@ -25,6 +51,15 @@ Play'e basar basmaz:
 - `PythonBridge` `127.0.0.1:8765` portunu dinlemeye başlar
 - `ParkurManager` seçili aşamayı kurar (varsayılan: **Aşama-1**)
 - Ekranın sağ üstünde namlu kamerası, sol üstte telemetri ve görev paneli çıkar
+
+### Çıkmak
+
+Ekranın **sağ alt köşesindeki kırmızı `CIKIS` butonu** ya da **Shift+Q**.
+İkisi de önce onay sorar (`EVET, CIK` / `VAZGEC`) — sürmekte olan bir tur yanlış
+tıklamayla kaybolmasın diye. Onaylayınca taret durdurulur, sonra editörde Play
+modu kapanır, derlenmiş oyunda uygulama sonlanır.
+
+Kısayolun `Shift` istemesi bilinçli: yalın `Q` nişan alırken kolayca basılabilir.
 
 ---
 
@@ -73,12 +108,19 @@ değilken sistem zaten manuel moddadır.
 | Boşluk | Ateş |
 | `M` | Manuel ↔ otomatik geçiş |
 | `Esc` | Acil durdur (aç/kapa) — hem hareketi hem ateşi keser |
+| `Shift+Q` | Simülasyondan çık (onay ister) |
 
 Görev panelindeki **zarf sırası** satırı, hangi hedefi sırada vurmanız
 gerektiğini sarı renkle gösterir. Sıra dışı bir hedefi vurursanız −5 ceza
 alırsınız (şartname 6.1).
 
 Puanlama menzile göre: 5 m → 5 puan, 10 m → 10 puan, 15 m → 20 puan.
+
+Hedefler **rayın üzerinde durur, hareket etmez** — gerçekteki gibi maketler
+arabalarla ray üstündedir, bu aşamada arabalar hareket etmez. Konumlar kolun
+5/10/15 m çemberini kestiği noktalardan, ateş sektörünün içinde ve birbirine
+açı olarak yayılacak şekilde seçilir. 5 m bandında 4 değil 3 hedef olması
+normaldir: sektör içinde üç kol o çemberi üç noktada kesiyor (toplam 11 hedef).
 
 ---
 
@@ -123,6 +165,76 @@ python3 run.py --host 192.168.1.5  # Unity başka makinede
 > çalışıyor; varsayılan 5 m helikopter ve füze için doğru, F16 için 10
 > vermeniz gerekir.
 
+### YOLO dedektörü
+
+Varsayılan dedektör HSV renk eşiklemedir. Eğitilmiş bir model varsa:
+
+```bash
+python3 run.py --yolo --weights best.pt
+python3 run.py --yolo --weights best.engine --yolo-track   # iz + sınıf oylaması
+python3 run.py --yolo --weights best.pt --yolo-sahi        # uzak/küçük hedef
+```
+
+Model açılırken sınıflarını rollere eşleştirir ve eşleşmeyi terminale yazar.
+Sınıf adlarınız farklıysa elle verin:
+
+```bash
+python3 run.py --yolo --weights best.pt \
+    --balloon-classes balon --enemy-classes dusman --friend-classes dost
+```
+
+Model **yalnızca tip** veriyorsa (`Object_detection/` altındaki modelde olduğu
+gibi: `drone, helicopter, plane, rocket`) hiçbir şey vermenize gerek yok; bu
+sınıflar otomatik "maket" rolüne düşer. Bu durumda **dost/düşman ayrımını yine
+maket rengi yapar**, model yalnızca tipi etiketler — model dost/düşman etiketi
+taşımadığı sürece sınıfını düşman saymak doğrudan dost ateşi demektir.
+
+| Seçenek | İşlev |
+|---|---|
+| `--yolo-conf`, `--yolo-iou`, `--yolo-imgsz`, `--yolo-device` | Standart çıkarım ayarları |
+| `--yolo-track` | ByteTrack izi + iz başına güven ağırlıklı taraf/tip oylaması. Tek karelik "düşman" titremesi ateşe dönüşmez |
+| `--yolo-tracker` | Takipçi yaml'i (ör. `../Object_detection/cfg/tracker_gimbal.yaml`) |
+| `--yolo-sahi`, `--slice-size`, `--overlap-ratio` | Dilimli çıkarım — 15 m'deki balon birkaç piksel, dilimleme tespiti artırır ama kare hızını düşürür |
+| `--no-hsv-fallback` | Model balonu bulamadığında HSV balon dedektörüne düşme |
+| `--no-crop-classify`, `--crop-conf` | Tipi belirlenemeyen hedefin üstündeki bölgeyi kırpıp modele yeniden sorma (varsayılan açık) |
+| `--maket-size` | Balon hiç bulunamayıp maketin kendisine nişan alındığında menzil kestiriminde kullanılan boy (m) |
+
+Nişan noktası ve menzil her zaman **balondan** gelir; model balon sınıfı
+içermiyorsa ya da o karede kaçırırsa balonu HSV dedektörü bulur, tarafı YOLO
+söyler. İkisi de bulunamazsa maketin kendisine nişan alınır — menzil o durumda
+`--maket-size` üzerinden kabaca kestirilir.
+
+### Hedef tipinin ekrana yazılması (Yetenek 6)
+
+Teşhis penceresinde **maketin üstünde modelin sınıfı** (`plane 0.34`, `drone`…),
+balonun altında ise taraf (`dusman` / `dost`) yazar. Tip `Engagement.label`
+alanında taşınır, dolayısıyla arayüze veya menzil penceresi tablosuna doğrudan
+bağlanabilir.
+
+Tipi tam karede okunamayan hedefler için **kırpma ile sınıflandırma** devreye
+girer: balonun üstündeki bölge kırpılıp modele ikinci kez sorulur. Bölge çıkarım
+boyutuna büyütüldüğü için maket çok daha büyük görünür — ölçülen etki, aynı
+sahnede güvenin **0.11 → 0.20–0.41**'e çıkması. Sonuç hedefin kaba konumuna göre
+birkaç kare önbelleklenir, böylece ek çıkarımın kare hızına maliyeti kalmaz
+(19.3 fps, akışın tam hızı). Kapatmak için `--no-crop-classify`.
+
+> **`Object_detection/` modeliyle simülasyon:** `best (05.08.02).pt` gerçek uçak
+> görüntüleriyle eğitildi; simülasyondaki alçak-poligonlu maketlerde tam karedeki
+> güveni **0.10–0.12**'de kalıyor, yani varsayılan `--yolo-conf 0.25` ile tam
+> karede tek kutu bile üretmiyor. Kırpma ile sınıflandırma bu açığı kapatıyor —
+> varsayılan eşikle çalışır:
+>
+> ```bash
+> ../.venv/bin/python run.py --yolo --weights '/home/tom/Downloads/best (05.08.02).pt'
+> ```
+>
+> Ölçülen: 19.3 fps, maketler `plane 0.34` / `drone` olarak doğru etiketleniyor.
+> Maketi kare dışında kalan (çok yakın) balon tipsiz kalır. Simülasyonda daha
+> yüksek güven için model simülasyon kareleriyle eğitilmeli; gerçek parkurda
+> varsayılan eşik zaten doğrudur. Taraf ayrımı her hâlükârda maket renginden
+> geldiği için düşük güven dost ateşi riski yaratmaz — yalnızca tip etiketini
+> etkiler.
+
 ---
 
 ## 6. Bağlantıyı doğrulama
@@ -150,6 +262,34 @@ komutu. Hepsi geçerse sorun Unity–Python arasında değildir.
 | Tuşlar çalışmıyor | Unity **Game** penceresine tıklayın; klavye odağı Scene penceresindeyse tuşlar gitmez. |
 | Puan hep 0 kalıyor | Düşman muhtemelen geçerli menzil penceresi dışında imha ediliyor. `--min-range` / `--max-range` ayarlayın. |
 | Dost vuruluyor (−10) | `--engage-unknown` açıksa kapatın; maket rengi okunamayan balonları düşman sayıyor. |
+| **Scene view baştan aşağı kırmızı** | Unity'nin OpenGL sürücü hatası, sahneyle ilgisi yok — aşağıya bakın. |
+
+### Scene view'ın kırmızı olması
+
+Linux'ta Unity bu makinede **OpenGLCore** ile açılıyordu ve Mesa/Intel sürücüsünde
+Scene view kamerasının render'ında **kırmızı kanal her pikselde 1.0'a kilitleniyordu**.
+Ölçüldü: kamera bomboş yeşil bir zemine temizlense bile çıktı `(1.000, 0.494, 0.000)`,
+piksellerin %100'ünde R doygun. Yani sahne verisi, ışıklar ve post-process temiz;
+sorun tamamen sürücü tarafında.
+
+Oyun kameraları (OperatorCam, MuzzleCam) etkilenmiyordu — Python'a giden akış ve
+puanlama hep doğruydu, yalnızca editördeki görüntü bozuktu.
+
+Çözüm, projenin grafik API sırasının **Vulkan** önceliğine alınmasıdır; yapıldı:
+
+```
+Project Settings > Player > Other Settings > Graphics APIs
+    Vulkan          ← önce bu denenir
+    OpenGLCore      ← Vulkan başlatılamazsa yedek
+```
+
+**Bu ayarın etkili olması için Unity'nin yeniden başlatılması gerekir.** Yeniden
+açtıktan sonra `Help > About Unity` başlığında `<Vulkan>` yazmalı (eskiden
+`<OpenGL 4.5>` yazıyordu). Bu makinede Vulkan doğrulandı: ayrık
+`NVIDIA GeForce RTX 4050 Laptop GPU` görünüyor, yani hem hata düzelir hem de
+render entegre Intel yerine ayrık kartta çalışabilir.
+
+Tek seferlik denemek isterseniz Unity'yi `-force-vulkan` argümanıyla da açabilirsiniz.
 
 ---
 
@@ -170,6 +310,30 @@ turda değişir ama hedefler üst üste binmez (ölçülen en küçük aralık ~
 
 Şartname değerlerine dönmek için 3 / 3 / 1 yazın; puanlama o değerlerde
 şartname tablolarını birebir üretir.
+
+Aşama-1'in yerleşimi `Asama-1 yerlesimi` başlığı altındadır:
+
+| Alan | Varsayılan | Ne yapar |
+|---|---|---|
+| `Static On Lanes` | açık | Hedefleri ray güzergâhının üzerine oturtur |
+| `Static Ranges` | 5 / 10 / 15 | Menzil bantları |
+| `Static Min Separation` | 1.2 m | Aynı banttaki iki hedef arası en küçük mesafe |
+| `Static Max Yaw` | 78° | Bu açının dışındaki ray noktaları kullanılmaz (ateş sektörü ±80°) |
+
+### Maket boyutunu değiştirmek
+
+`Assets/SteelDome/Prefabs/Hedef_*.prefab` → `Model` nesnesinin `Scale` alanı.
+Şu an **1.5**; şartname ölçeğine dönmek için 1 yazın.
+
+> Büyütürken dikkat: maketin **alt kenarı balonun üstünü (y = 1.29) geçmemeli**.
+> Geçerse maket balonu gölgeler ve balonu vurmak imkânsız hale gelir — imha
+> yalnızca balondan sayıldığı için aşama tıkanır. Balistik füze dik durduğu ve
+> en uzun model olduğu için `Model` yüksekliği onda 1.58 yerine 1.715'e
+> çıkarıldı; diğer üçü 1.58'de kaldı.
+>
+> **Balonu büyütmeyin.** Çapı 0.28 m ve Python menzili balonun piksel
+> yüksekliğinden kestiriyor (`bridge.py` → `BALLOON_DIAMETER_M`); balon
+> büyürse tüm menzil ölçümleri kayar.
 
 > **Puanlama nasıl ölçekleniyor:** Aşama-2'nin tablosu (1 imha 5, 2 imha 15,
 > 3 imha 30 puan) `30·k(k+1) / n(n+1)` formülünün özel hali. Hedef sayısı

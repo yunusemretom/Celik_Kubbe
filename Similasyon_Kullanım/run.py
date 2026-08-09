@@ -7,11 +7,16 @@ balonun ustundeki maketin renginden dost/dusman ayrimini yapar ve dusman
 balonuna kilitlenip ates eder.
 
 Kullanim:
-    python3 run.py                    # otonom takip + ates
+    python3 run.py                    # otonom takip + ates (HSV dedektoru)
     python3 run.py --no-fire          # sadece takip, ates etme
     python3 run.py --engage-unknown   # maketi secilemeyen balonlari da hedefle
     python3 run.py --no-window        # gorsel pencere olmadan
     python3 run.py --legacy-color     # eski renk-tabanli dedektor
+
+    # YOLO dedektoru:
+    python3 run.py --yolo --weights best.pt
+    python3 run.py --yolo --weights best.engine --yolo-track     # iz + sinif oylamasi
+    python3 run.py --yolo --weights best.pt --yolo-sahi          # kucuk hedef icin dilimli
 """
 
 from __future__ import annotations
@@ -22,7 +27,13 @@ import time
 
 import cv2
 
-from bridge import BridgeError, SteelDomeClient, estimate_range, pixel_to_angles
+from bridge import (
+    BALLOON_DIAMETER_M,
+    BridgeError,
+    SteelDomeClient,
+    estimate_range,
+    pixel_to_angles,
+)
 from tracker import (
     BalloonTargetDetector,
     ColorTargetDetector,
@@ -55,7 +66,106 @@ def parse_args() -> argparse.Namespace:
                    help="Balon/maket yerine eski duz renk dedektorunu kullan")
     p.add_argument("--color", default=None, choices=["red", "green", "blue", "yellow"],
                    help="--legacy-color ile: sadece bu rengi takip et")
-    return p.parse_args()
+
+    y = p.add_argument_group("YOLO dedektoru")
+    y.add_argument("--yolo", action="store_true",
+                   help="HSV yerine YOLO dedektorunu kullan (--weights sart)")
+    y.add_argument("--weights", default=None, help="YOLO model yolu (.pt / .engine)")
+    y.add_argument("--yolo-conf", type=float, default=0.25,
+                   help="Guven esigi. Iz takibi acikken dusuk tutulabilir")
+    y.add_argument("--yolo-iou", type=float, default=0.7, help="NMS IoU esigi")
+    y.add_argument("--yolo-imgsz", type=int, default=640,
+                   help="Cikarim cozunurlugu (egitimle ayni olmali)")
+    y.add_argument("--yolo-device", default="", help="Cihaz: '', 'cpu', '0'")
+    y.add_argument("--yolo-track", action="store_true",
+                   help="ByteTrack izleri + iz bazli taraf oylamasi (dost atesine karsi)")
+    y.add_argument("--yolo-tracker", default="bytetrack.yaml",
+                   help="Takipci yapilandirmasi (ornegin ../Object_detection/cfg/"
+                        "tracker_gimbal.yaml)")
+    y.add_argument("--yolo-vote-frames", type=int, default=3,
+                   help="--yolo-track ile: taraf kararina guvenmek icin gereken kare")
+    y.add_argument("--yolo-sahi", action="store_true",
+                   help="SAHI dilimli cikarim - uzak/kucuk hedefte tespiti artirir, "
+                        "kare hizini dusurur")
+    y.add_argument("--slice-size", type=int, default=512, help="SAHI dilim boyutu (piksel)")
+    y.add_argument("--overlap-ratio", type=float, default=0.2, help="SAHI ortusme orani")
+    y.add_argument("--no-hsv-fallback", action="store_true",
+                   help="Model balonu bulamadiginda HSV balon dedektorune dusme")
+    y.add_argument("--no-crop-classify", action="store_true",
+                   help="Tipi belirlenemeyen hedefin ustundeki bolgeyi kirpip modele "
+                        "yeniden sorma (varsayilan: sorar)")
+    y.add_argument("--crop-conf", type=float, default=0.05,
+                   help="Kirpma ile siniflandirmada guven esigi. Tam karedekinden "
+                        "dusuk tutulur: bolge buyutuldugu icin tespit zaten kolaylasir")
+    y.add_argument("--balloon-classes", default=None,
+                   help="Balon sinif adlari (virgulle ayrilmis)")
+    y.add_argument("--enemy-classes", default=None,
+                   help="Dusman maket sinif adlari (virgulle ayrilmis)")
+    y.add_argument("--friend-classes", default=None,
+                   help="Dost maket sinif adlari (virgulle ayrilmis)")
+    y.add_argument("--type-classes", default=None,
+                   help="Yalnizca hedef tipi veren sinif adlari (drone, helicopter, "
+                        "plane, rocket ...). Bunlarda taraf ayrimini maket rengi yapar")
+    y.add_argument("--maket-size", type=float, default=0.50,
+                   help="Balon bulunamayip maketin kendisine nisan alindiginda menzil "
+                        "kestiriminde kullanilacak maket boyu (m)")
+
+    args = p.parse_args()
+    if args.yolo and args.legacy_color:
+        p.error("--yolo ile --legacy-color birlikte kullanilamaz.")
+    if args.yolo and not args.weights:
+        p.error("--yolo icin --weights vermelisiniz.")
+    return args
+
+
+def _class_list(value, default):
+    """Virgulle ayrilmis sinif adi listesini ayristirir; bos ise varsayilan kalir."""
+    if not value:
+        return default
+    return tuple(part.strip() for part in value.split(",") if part.strip())
+
+
+def build_yolo_detector(args: argparse.Namespace):
+    """
+    YOLO dedektorunu kurar.
+
+    Import burada yapiliyor: ultralytics yuklemesi birkac saniye suruyor, HSV
+    moduyla calisanlar bunu odemesin.
+    """
+    from yolo_detector import (
+        BALLOON_NAMES,
+        ENEMY_NAMES,
+        FRIEND_NAMES,
+        TYPE_NAMES,
+        YoloTargetDetector,
+    )
+
+    # Model balonu kacirdiginda nisan noktasi ve menzil kaybolmasin diye HSV
+    # dedektoru yedekte durur - balon dairesel ve emissive oldugu icin renk
+    # esikleme burada hala guvenilir.
+    fallback = None if args.no_hsv_fallback else BalloonTargetDetector(min_area=args.min_area)
+
+    return YoloTargetDetector(
+        weights=args.weights,
+        conf=args.yolo_conf,
+        iou=args.yolo_iou,
+        imgsz=args.yolo_imgsz,
+        device=args.yolo_device,
+        balloon_classes=_class_list(args.balloon_classes, BALLOON_NAMES),
+        enemy_classes=_class_list(args.enemy_classes, ENEMY_NAMES),
+        friend_classes=_class_list(args.friend_classes, FRIEND_NAMES),
+        type_classes=_class_list(args.type_classes, TYPE_NAMES),
+        use_sahi=args.yolo_sahi,
+        slice_size=args.slice_size,
+        overlap_ratio=args.overlap_ratio,
+        use_track=args.yolo_track,
+        tracker_cfg=args.yolo_tracker,
+        vote_frames=args.yolo_vote_frames,
+        fallback=fallback,
+        crop_classify=not args.no_crop_classify,
+        crop_conf=args.crop_conf,
+        maket_size_m=args.maket_size,
+    )
 
 
 def main() -> int:
@@ -67,6 +177,8 @@ def main() -> int:
             colors=[args.color] if args.color else None,
             min_area=max(args.min_area, 120),
         )
+    elif args.yolo:
+        detector = build_yolo_detector(args)
     else:
         detector = BalloonTargetDetector(min_area=args.min_area)
     tracker = TurretTracker()
@@ -103,9 +215,15 @@ def main() -> int:
                 detections = detector.detect(frame)
                 target = pick_engagement(detections, frame.shape,
                                          engage_unknown=args.engage_unknown)
-                # Hedef kimligi olarak konumu kabaca kullanmak yeterli; amaci
-                # hedef degistiginde PID birikimini sifirlatmak.
-                key = f"{int(target.cx) // 24},{int(target.cy) // 24}" if target else None
+                # Iz kimligi varsa (YOLO + --yolo-track) onu kullan; yoksa konumu
+                # kabaca kullanmak yeterli. Amac hedef degistiginde PID birikimini
+                # sifirlatmak.
+                if target is None:
+                    key = None
+                elif target.track_id is not None:
+                    key = f"id{target.track_id}"
+                else:
+                    key = f"{int(target.cx) // 24},{int(target.cy) // 24}"
 
             target_range = float("inf")
             if target is not None:
@@ -113,7 +231,12 @@ def main() -> int:
                 yaw_cmd, pitch_cmd = tracker.update(yaw_error, pitch_error, dt, target_key=key)
 
                 if not legacy:
-                    target_range = estimate_range(target.bbox[3], telemetry)
+                    # Nisan noktasi balonsa capi bilinir; maketin kendisine nisan
+                    # alindiysa dedektor tahmini boyu size_m ile bildirir.
+                    target_range = estimate_range(
+                        target.bbox[3], telemetry,
+                        target.size_m if target.size_m is not None else BALLOON_DIAMETER_M,
+                    )
 
                 # Ates yalnizca kilitliyken ve gecerli menzil penceresindeyken;
                 # nisan hatasi buyukken atesleme yandaki dost hedefi vurabilir,
@@ -140,9 +263,16 @@ def main() -> int:
                     view = draw_engagements(frame, detections, target, tracker,
                                             telemetry, fps, fire_ready=fire,
                                             target_range=target_range)
-                cv2.imshow("Celik Kubbe - Namlu Kamerasi", view)
-                if cv2.waitKey(1) & 0xFF in (ord("q"), 27):
-                    break
+                try:
+                    cv2.imshow("Celik Kubbe - Namlu Kamerasi", view)
+                    if cv2.waitKey(1) & 0xFF in (ord("q"), 27):
+                        break
+                except cv2.error as e:
+                    # Basssiz makine ya da GUI'siz opencv kurulumu: takip ve ates
+                    # calismaya devam etsin, yalnizca pencere kapansin.
+                    print(f"[UYARI] Pencere acilamadi, gorsel cikis kapatiliyor: {e}",
+                          file=sys.stderr)
+                    args.no_window = True
 
     except KeyboardInterrupt:
         print("\nKullanici tarafindan durduruldu.")
@@ -156,7 +286,11 @@ def main() -> int:
             pass
         client.close()
         if not args.no_window:
-            cv2.destroyAllWindows()
+            # Kapanis, asil hatayi maskelemesin.
+            try:
+                cv2.destroyAllWindows()
+            except cv2.error:
+                pass
         print("Baglanti kapatildi, taret durduruldu.")
 
     return 0

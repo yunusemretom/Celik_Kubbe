@@ -1,10 +1,11 @@
 """
 Hedef tespiti ve taret kontrol dongusu.
 
-Tespit su an renk esiklemeye dayali - simulasyondaki hedefler emissive malzemeli
-oldugu icin ton (hue) isiklandirmadan bagimsiz ve kararli. Daha sonra bu sinifin
-yerine bir YOLO dedektoru koymak icin sadece `detect()` metodunu ayni imzayla
-uygulamak yeterli.
+Buradaki tespit renk esiklemeye dayali - simulasyondaki hedefler emissive
+malzemeli oldugu icin ton (hue) isiklandirmadan bagimsiz ve kararli.
+
+YOLO alternatifi `yolo_detector.YoloTargetDetector` icinde; ayni `detect()`
+imzasini kullandigi icin bu dosyadaki kontrol ve cizim katmani degismeden calisir.
 """
 
 from __future__ import annotations
@@ -108,6 +109,13 @@ class Engagement:
     bbox: Tuple[int, int, int, int]
     faction: str                       # "dusman" | "dost" | "bilinmiyor"
     maket_bbox: Optional[Tuple[int, int, int, int]] = None
+
+    # Asagidakileri YOLO dedektoru doldurur, renk dedektoru bos birakir.
+    label: str = ""                    # modelin sinif adi (hedef tipi)
+    score: float = 0.0                 # tespit guveni
+    size_m: Optional[float] = None     # menzil kestiriminde kullanilacak gercek boy;
+                                       # None ise balon capi varsayilir
+    track_id: Optional[int] = None     # iz kimligi (varsa)
 
     @property
     def is_enemy(self) -> bool:
@@ -511,6 +519,18 @@ def draw_engagements(
         if t.maket_bbox is not None:
             mx, my, mw, mh = t.maket_bbox
             cv2.rectangle(canvas, (mx, my), (mx + mw, my + mh), colour, 1)
+
+        # Hedef tipi maketin ustunde durur (sartname Yetenek 6: arayuzde
+        # siniflandirma gorunmeli), taraf ise nisan alinan balonun altinda.
+        if t.label:
+            tip = f"{t.label} {t.score:.2f}" if t.score > 0 else t.label
+            if t.maket_bbox is not None:
+                tx, ty = t.maket_bbox[0], max(10, t.maket_bbox[1] - 4)
+            else:
+                tx, ty = x, max(10, y - 4)
+            cv2.putText(canvas, tip, (tx, ty),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.42, colour, 1, cv2.LINE_AA)
+
         cv2.putText(canvas, t.faction, (x, y + bh + 12),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.38, colour, 1, cv2.LINE_AA)
 

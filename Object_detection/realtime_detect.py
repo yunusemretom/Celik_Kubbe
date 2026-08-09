@@ -270,7 +270,7 @@ def parse_args():
     ap = argparse.ArgumentParser(
         description="SAHI destekli gerçek zamanlı nesne tespiti (YOLOv8)"
     )
-    ap.add_argument("--weights", default="/home/tom/Downloads/best (05.08).engine",
+    ap.add_argument("--weights", default="/home/tom/Downloads/best (05.08).enginepytho",
                      help="YOLO model yolu (.pt veya .engine)")
     ap.add_argument("--source", default="0",
                      help="Video kaynağı: 0 (webcam), video.mp4, rtsp://...")
