@@ -187,6 +187,7 @@ class YoloTargetDetector:
         self.crop_refresh = max(1, crop_refresh)
         self._label_cache: Dict[Tuple[int, int], Tuple[str, float, Tuple[int, int, int, int], int]] = {}
         self._crop_frame = 0
+        self._max_batch: Optional[int] = None
         self.maket_only = maket_only
         self.maket_size_m = maket_size_m
         self.maket_gap = maket_gap      # balon/maket yuksekliginin kati - dikey arama payi
@@ -462,10 +463,18 @@ class YoloTargetDetector:
         if not crops:
             return
 
-        # Tek cagride topluca: her hedef icin ayri predict cagirmak kare basina
-        # birkac milisaniyeyi bosa harcar.
-        preds = self._model.predict(crops, imgsz=self.imgsz, conf=self.crop_conf,
-                                    iou=self.iou, device=self.device, verbose=False)
+        # Mumkun oldugunca topluca: her hedef icin ayri predict cagirmak kare
+        # basina birkac milisaniyeyi bosa harcar. Ancak statik batch ile
+        # derlenmis .engine modeli kendi batch boyutundan fazlasini kabul
+        # etmedigi icin yigin modelin sinirina bolunur.
+        preds = []
+        index = 0
+        while index < len(crops):
+            step = self._batch_limit() or (len(crops) - index)
+            preds.extend(self._model.predict(
+                crops[index:index + step], imgsz=self.imgsz, conf=self.crop_conf,
+                iou=self.iou, device=self.device, verbose=False))
+            index += step
 
         for eng, (x0, y0), pred in zip(owners, origins, preds):
             best, best_score, best_role = None, 0.0, None
@@ -499,6 +508,31 @@ class YoloTargetDetector:
             self._label_cache[self._cache_key(eng)] = (
                 name, float(best_score), (mx - bx, my - by, mw, mh), self._crop_frame,
             )
+
+    def _batch_limit(self) -> int:
+        """
+        Tek predict cagrisina sigan en fazla goruntu sayisi; 0 = sinir yok.
+
+        Statik batch ile derlenen TensorRT motoru (.engine) yalnizca derlendigi
+        batch boyutunu kabul eder, fazlasi AssertionError ile duser. .pt modelde
+        boyle bir sinir yoktur. Sinir ancak predictor kurulduktan sonra
+        okunabildigi icin ogrenildigi anda onbellege alinir; oncesinde en guvenli
+        varsayim olan 1 doner (tam kare cikarimi zaten predictor'u kurdugu icin
+        bu yalnizca SAHI yolunda ilk kareye denk gelir).
+        """
+        if self._max_batch is not None:
+            return self._max_batch
+
+        backend = getattr(getattr(self._model, "predictor", None), "model", None)
+        if backend is None:
+            return 1
+
+        if getattr(backend, "dynamic", True):
+            self._max_batch = 0
+        else:
+            binding = getattr(backend, "bindings", {}).get("images")
+            self._max_batch = int(binding.shape[0]) if binding is not None else 1
+        return self._max_batch
 
     def _cache_key(self, eng: Engagement) -> Tuple[int, int]:
         if eng.track_id is not None:

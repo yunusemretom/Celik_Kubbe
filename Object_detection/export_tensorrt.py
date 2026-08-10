@@ -3,7 +3,7 @@ from ultralytics import YOLO
 def export_to_tensorrt():
     # Load the trained YOLOv8 model
     # Replace 'runs/detect/yolov8_custom_model/weights/best.pt' with the path to your trained model
-    model = YOLO('yolov8n.pt') 
+    model = YOLO('/home/tom/Downloads/best (05.08.02).pt') 
 
     # Export the model to TensorRT format (.engine)
     # Ensure that you have TensorRT installed and configured on your system
