@@ -300,8 +300,13 @@
           <div id="camera-mjpeg-section" class="hidden">
             <div class="form-group">
               <label>MJPEG URL &amp; Port</label>
-              <input type="text" id="cfg-mjpeg-url" placeholder="http://192.168.1.100:8080/video" />
-              <span class="form-hint">Örnek: http://IP_ADRESİ:<strong>PORT</strong>/video</span>
+              <input type="text" id="cfg-mjpeg-url" placeholder="http://127.0.0.1:8090/stream" />
+              <span class="form-hint">
+                Örnek: http://IP_ADRESİ:<strong>PORT</strong>/video<br />
+                Simülasyon namlu kamerası:
+                <strong>http://127.0.0.1:8090/stream</strong>
+                (<code>telemetry_sim.py --mode sim --mjpeg-port 8090</code>)
+              </span>
             </div>
           </div>
 

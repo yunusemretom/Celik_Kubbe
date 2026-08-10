@@ -72,31 +72,33 @@ class SettingsPage {
     document.getElementById('btn-apply-camera').addEventListener('click', () => {
       const source = document.getElementById('cfg-camera-source').value;
       const opts = {};
+      // Seçim sunucuda saklanır: sayfa yenilenince kaynak korunur.
+      const persist = { source };
 
       if (source === 'webcam') {
         opts.deviceId = document.getElementById('cfg-webcam-device').value;
+      } else if (source === 'device') {
+        opts.device = document.getElementById('cfg-v4l2-device').value || '/dev/video0';
+        persist.device = opts.device;
       } else if (source === 'rtsp') {
         opts.rtspUrl = document.getElementById('cfg-rtsp-url-cam').value;
         if (!opts.rtspUrl) { window.showToast('RTSP URL giriniz', 'warning'); return; }
-        // Update backend config too
-        ykiWS.send({ type: 'settings_update', settings: { video: { rtspUrl: opts.rtspUrl } } });
+        persist.rtspUrl = opts.rtspUrl;
       } else if (source === 'mjpeg') {
         opts.mjpegUrl = document.getElementById('cfg-mjpeg-url').value;
         if (!opts.mjpegUrl) { window.showToast('MJPEG URL giriniz', 'warning'); return; }
+        persist.mjpegUrl = opts.mjpegUrl;
       }
+
+      ykiWS.send({ type: 'settings_update', settings: { video: persist } });
 
       // Apply to dashboard
       if (window.dashboard) {
         window.dashboard.stopCamera();
-        window.dashboard.currentSource = source;
-        if (source === 'webcam') window.dashboard.currentDeviceId = opts.deviceId;
-        if (source === 'mjpeg') window.dashboard._mjpegUrl = opts.mjpegUrl;
-        if (source === 'rtsp' && opts.rtspUrl) {
-          // Update backend RTSP URL first then start
-          setTimeout(() => window.dashboard.startCamera(), 800);
-        } else {
-          window.dashboard.startCamera();
-        }
+        window.dashboard.setCameraSource(source, opts);
+        // Sunucu tarafı kaynaklarda ayar önce kaydedilmeli, sonra FFmpeg açılmalı.
+        const delay = (source === 'rtsp' || source === 'device') ? 800 : 0;
+        setTimeout(() => window.dashboard.startCamera(), delay);
         window.showToast('Kamera kaynağı değiştirildi: ' + source.toUpperCase(), 'success');
       }
     });
@@ -201,9 +203,23 @@ class SettingsPage {
     if (cfg.video) {
       this._val('cfg-rtsp-url', cfg.video.rtspUrl);
       this._val('cfg-rtsp-url-cam', cfg.video.rtspUrl);
+      this._val('cfg-mjpeg-url', cfg.video.mjpegUrl);
       this._val('cfg-resolution', cfg.video.resolution);
       this._val('cfg-fps', cfg.video.fps);
       this._val('cfg-bitrate', cfg.video.bitrate);
+      if (cfg.video.device) {
+        const sel = document.getElementById('cfg-v4l2-device');
+        // Cihaz listesi henüz çekilmediyse kayıtlı yolu seçenek olarak ekle
+        if (sel && !Array.from(sel.options).some((o) => o.value === cfg.video.device)) {
+          sel.insertAdjacentHTML('afterbegin',
+            `<option value="${cfg.video.device}">${cfg.video.device}</option>`);
+        }
+        this._val('cfg-v4l2-device', cfg.video.device);
+      }
+      if (cfg.video.source) {
+        this._val('cfg-camera-source', cfg.video.source);
+        this._updateCameraUI(cfg.video.source);
+      }
     }
     if (cfg.vehicle) {
       this._val('cfg-vehicle-name', cfg.vehicle.name);

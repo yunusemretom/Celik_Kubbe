@@ -13,6 +13,8 @@ class VideoRelay extends EventEmitter {
     this.frameCount = 0;
     this.startTime = null;
     this.currentUrl = null;
+    this.currentSource = null;
+    this.lastError = null;
   }
 
   startServer() {
@@ -42,19 +44,51 @@ class VideoRelay extends EventEmitter {
     console.log(`[Video] WebSocket sunucu port ${videoWsPort} hazır`);
   }
 
-  startStream(rtspUrl) {
+  /**
+   * Girdiye göre FFmpeg giriş argümanlarını kurar.
+   * opts: { source: 'rtsp'|'device'|'mjpeg', url, device }
+   */
+  _inputArgs(opts, cfg, width, height) {
+    const fps = String(cfg.fps || 30);
+
+    if (opts.source === 'device') {
+      // V4L2 kamera: çözünürlük/fps sürücüden istenir, ffmpeg dönüştürmez.
+      this.currentUrl = opts.device || cfg.device || '/dev/video0';
+      return [
+        '-f', 'v4l2',
+        '-framerate', fps,
+        '-video_size', `${width}x${height}`,
+        '-i', this.currentUrl,
+      ];
+    }
+
+    if (opts.source === 'mjpeg') {
+      // Tarayıcı MJPEG'i doğrudan da çizebilir; bu yol yalnızca kaynağa
+      // yalnızca sunucunun erişebildiği durumlar için.
+      this.currentUrl = opts.url || cfg.mjpegUrl;
+      return ['-f', 'mjpeg', '-i', this.currentUrl];
+    }
+
+    this.currentUrl = opts.url || cfg.rtspUrl;
+    return ['-rtsp_transport', 'tcp', '-i', this.currentUrl];
+  }
+
+  /**
+   * Yayını başlatır.
+   * Eski kullanım (`startStream(rtspUrl)`) çalışmaya devam eder.
+   */
+  startStream(opts) {
     if (this.streaming) this.stopStream();
+
+    if (typeof opts === 'string' || !opts) opts = { source: 'rtsp', url: opts };
 
     const cfg = this.config.get('video');
     const [width, height] = (cfg.resolution || '1280x720').split('x');
-    this.currentUrl = rtspUrl || cfg.rtspUrl;
-
-    console.log(`[Video] Stream başlatılıyor: ${this.currentUrl}`);
+    this.currentSource = opts.source || 'rtsp';
 
     const args = [
       '-loglevel', 'warning',
-      '-rtsp_transport', 'tcp',
-      '-i', this.currentUrl,
+      ...this._inputArgs(opts, cfg, width, height),
       '-f', 'mpeg1video',
       '-b:v', `${cfg.bitrate || 800}k`,
       '-r', String(cfg.fps || 30),
@@ -62,6 +96,8 @@ class VideoRelay extends EventEmitter {
       '-q:v', '5',
       'pipe:1',
     ];
+
+    console.log(`[Video] Stream başlatılıyor (${this.currentSource}): ${this.currentUrl}`);
 
     this.ffmpegProcess = spawn('ffmpeg', args);
     this.startTime = Date.now();
@@ -77,17 +113,27 @@ class VideoRelay extends EventEmitter {
       });
     });
 
+    this.lastError = null;
     this.ffmpegProcess.stderr.on('data', (data) => {
-      const msg = data.toString();
-      if (msg.includes('Error') || msg.includes('error')) {
-        console.error('[Video] FFmpeg:', msg.trim());
+      const msg = data.toString().trim();
+      if (!msg) return;
+      // Kaynak açılamadığında hata son satırda gelir; arayüze taşımak için
+      // saklıyoruz - aksi halde kamera sessizce açılmıyor gibi görünüyor.
+      this.lastError = msg.split('\n').pop();
+      if (/error|Invalid|No such|busy|refused|denied|timed out/i.test(msg)) {
+        console.error('[Video] FFmpeg:', msg);
       }
     });
 
     this.ffmpegProcess.on('close', (code) => {
       console.log(`[Video] FFmpeg kapandı (kod: ${code})`);
+      const failed = this.streaming && code !== 0 && this.frameCount === 0;
       this.streaming = false;
       this.ffmpegProcess = null;
+      if (failed) {
+        this.emit('error', `Kaynak açılamadı (${this.currentUrl}): `
+          + (this.lastError || `ffmpeg kod ${code}`));
+      }
       this.emit('stopped');
       this._broadcastStatus();
     });
@@ -116,6 +162,7 @@ class VideoRelay extends EventEmitter {
     this.startTime = null;
     this.frameCount = 0;
     this.currentUrl = null;
+    this.currentSource = null;
     this._broadcastStatus();
     console.log('[Video] Stream durduruldu');
   }
@@ -125,6 +172,7 @@ class VideoRelay extends EventEmitter {
       type: 'stream_status',
       streaming: this.streaming,
       url: this.currentUrl,
+      source: this.currentSource,
     });
     this.clients.forEach((client) => {
       if (client.readyState === WebSocket.OPEN) {
@@ -141,6 +189,8 @@ class VideoRelay extends EventEmitter {
       frameCount: this.frameCount,
       fps: elapsed > 0 ? Math.round(this.frameCount / elapsed) : 0,
       url: this.currentUrl,
+      source: this.currentSource,
+      lastError: this.lastError || null,
     };
   }
 }

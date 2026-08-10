@@ -265,10 +265,14 @@ class Dashboard {
     this.webcamVideo = document.getElementById('webcam-video');
     this.player = null;
     this.webcamStream = null;
-    this.currentSource = 'webcam'; // webcam | rtsp | mjpeg
-    this.currentDeviceId = '';
+    this.currentSource = 'webcam'; // webcam | device | rtsp | mjpeg
+    this.currentDeviceId = '';     // tarayıcı webcam'i (getUserMedia deviceId)
+    this.videoDevice = '/dev/video0'; // sunucu tarafı V4L2 cihazı
     this.videoWsPort = 8081;
     this.streaming = false;
+    this._mjpegUrl = '';
+    this._rtspUrl = '';
+    this._mjpegErrors = 0;
 
     // Instruments
     this.ai = new AttitudeIndicator('ai-canvas');
@@ -332,11 +336,14 @@ class Dashboard {
   _bindEvents() {
     ykiWS.on('init', (msg) => {
       if (msg.config?.server?.videoWsPort) this.videoWsPort = msg.config.server.videoWsPort;
+      this.applyConfig(msg.config);
     });
 
+    ykiWS.on('config_updated', (msg) => this.applyConfig(msg.config));
+
     ykiWS.on('video_status', (msg) => {
-      if (msg.streaming) this._onStreamStarted('rtsp');
-      else if (this.currentSource === 'rtsp') this._onStreamStopped();
+      if (msg.streaming) this._onStreamStarted(msg.source || this.currentSource);
+      else if (this._usesBackend()) this._onStreamStopped();
     });
 
     ykiWS.on('video_error', (msg) => {
@@ -355,21 +362,44 @@ class Dashboard {
   }
 
   // ── Camera Control ─────────────────────────────────────────
+  /** Sunucudan gelen ayarları uygular; sayfa açılışında kaynak buradan gelir. */
+  applyConfig(cfg) {
+    const v = cfg?.video;
+    if (!v) return;
+    if (v.source) this.currentSource = v.source;
+    if (v.mjpegUrl) this._mjpegUrl = v.mjpegUrl;
+    if (v.rtspUrl) this._rtspUrl = v.rtspUrl;
+    if (v.device) this.videoDevice = v.device;
+  }
+
+  /** Kaynak sunucu tarafında FFmpeg ile mi açılıyor? */
+  _usesBackend() {
+    return this.currentSource === 'rtsp' || this.currentSource === 'device';
+  }
+
   setCameraSource(source, opts = {}) {
     this.currentSource = source;
     if (opts.deviceId !== undefined) this.currentDeviceId = opts.deviceId;
+    if (opts.device !== undefined) this.videoDevice = opts.device;
+    if (opts.mjpegUrl !== undefined) this._mjpegUrl = opts.mjpegUrl;
+    if (opts.rtspUrl !== undefined) this._rtspUrl = opts.rtspUrl;
   }
 
   async startCamera() {
     this.stopCamera();
     switch (this.currentSource) {
       case 'webcam':  await this._startWebcam(); break;
-      case 'rtsp':    this._startRTSP(); break;
+      case 'device':  this._startBackendStream('device'); break;
+      case 'rtsp':    this._startBackendStream('rtsp'); break;
       case 'mjpeg':   this._startMJPEG(this._mjpegUrl); break;
+      default:
+        window.showToast('Bilinmeyen kamera kaynağı: ' + this.currentSource, 'error');
     }
   }
 
   stopCamera() {
+    // Sunucudaki FFmpeg de dursun, aksi halde kaynak meşgul kalıyor
+    if (this._usesBackend() && this.streaming) ykiWS.send({ type: 'video_stop' });
     // Webcam
     if (this.webcamStream) {
       this.webcamStream.getTracks().forEach((t) => t.stop());
@@ -379,12 +409,20 @@ class Dashboard {
     // JSMpeg
     if (this.player) { this.player.destroy(); this.player = null; }
     // MJPEG img
-    if (this._mjpegImg) { this._mjpegImg.src = ''; }
+    if (this._mjpegImg) { this._mjpegImg.src = ''; this._mjpegImg = null; }
     this.canvas.getContext('2d').clearRect(0, 0, this.canvas.width, this.canvas.height);
     this._onStreamStopped();
   }
 
   async _startWebcam() {
+    if (!navigator.mediaDevices?.getUserMedia) {
+      // Tarayıcı getUserMedia'yı yalnızca güvenli kaynakta verir: localhost ya
+      // da https. YKI'ye ağ üzerinden IP ile girildiğinde web kamera açılmaz.
+      window.showToast(
+        'Web kamera yalnızca localhost veya HTTPS üzerinden açılabilir. '
+        + 'Ağ üzerinden bağlıysanız V4L2 / MJPEG kaynağını kullanın.', 'error');
+      return;
+    }
     try {
       const constraints = {
         video: this.currentDeviceId ? { deviceId: { exact: this.currentDeviceId } } : true,
@@ -401,8 +439,14 @@ class Dashboard {
     }
   }
 
-  _startRTSP() {
-    ykiWS.send({ type: 'video_start' });
+  /** RTSP ve V4L2: kaynağı sunucudaki FFmpeg açar, kareler WS ile gelir. */
+  _startBackendStream(source) {
+    ykiWS.send({
+      type: 'video_start',
+      source,
+      url: this._rtspUrl,
+      device: this.videoDevice,
+    });
     this.webcamVideo.classList.add('hidden');
     this.canvas.classList.remove('hidden');
 
@@ -414,12 +458,14 @@ class Dashboard {
       autoplay: true,
       audio: false,
     });
-    window.showToast('RTSP stream başlatılıyor...', 'info');
+    const what = source === 'device' ? this.videoDevice : this._rtspUrl;
+    window.showToast(`Yayın başlatılıyor: ${what}`, 'info');
   }
 
   _startMJPEG(url) {
     if (!url) { window.showToast('MJPEG URL giriniz', 'error'); return; }
     this._mjpegUrl = url;
+    this._mjpegErrors = 0;
     this.webcamVideo.classList.add('hidden');
     this.canvas.classList.remove('hidden');
 
@@ -428,6 +474,9 @@ class Dashboard {
     img.crossOrigin = 'anonymous';
     this._mjpegImg = img;
 
+    let drawn = 0;
+    let fpsStart = performance.now();
+
     const drawFrame = () => {
       if (!this._mjpegImg) return;
       const ctx = this.canvas.getContext('2d');
@@ -435,17 +484,38 @@ class Dashboard {
         this.canvas.width = img.naturalWidth;
         this.canvas.height = img.naturalHeight;
         ctx.drawImage(img, 0, 0);
+        drawn++;
+      }
+      const dt = performance.now() - fpsStart;
+      if (dt >= 1000) {
+        document.getElementById('info-fps').textContent = Math.round((drawn * 1000) / dt);
+        drawn = 0;
+        fpsStart = performance.now();
       }
       this._animFrame = requestAnimationFrame(drawFrame);
     };
 
     img.onload = () => {
+      this._mjpegErrors = 0;
       this._onStreamStarted('mjpeg');
       drawFrame();
     };
     img.onerror = () => {
-      // MJPEG continuously reloads
-      setTimeout(() => { img.src = url + '?' + Date.now(); }, 100);
+      // Kaynak henüz ayakta olmayabilir; birkaç kez dene, sonra vazgeç.
+      // (Eskiden sonsuza kadar sessizce denerdi: kamera "hiç açılmıyor" görünürdü.)
+      if (this._mjpegImg !== img) return;
+      this._mjpegErrors++;
+      if (this._mjpegErrors === 5) {
+        window.showToast(`MJPEG kaynağına ulaşılamıyor: ${url}`, 'error');
+      }
+      if (this._mjpegErrors > 20) {
+        window.showToast('MJPEG bağlantısı kuruldu bulunamadı, durduruldu', 'error');
+        this.stopCamera();
+        return;
+      }
+      setTimeout(() => {
+        if (this._mjpegImg === img) img.src = url + (url.includes('?') ? '&' : '?') + Date.now();
+      }, 500);
     };
     img.src = url;
     window.showToast('MJPEG stream bağlanıyor...', 'info');

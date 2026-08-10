@@ -12,6 +12,32 @@ const VideoRelay = require('./videoRelay');
 const app = express();
 app.use(express.json());
 app.use(express.static(path.join(__dirname, '../frontend')));
+
+// ─── API ───────────────────────────────────────────────────────────────────────
+// Not: bu rotalar aşağıdaki catch-all'dan ÖNCE tanımlanmalı, yoksa istek
+// index.html ile cevaplanır ve arayüzde JSON ayrıştırma hatası olur.
+
+/** Sistemdeki V4L2 kameralarını listeler. */
+app.get('/api/devices/video', (_, res) => {
+  const fs = require('fs');
+  try {
+    const devices = fs.readdirSync('/dev')
+      .filter((f) => /^video\d+$/.test(f))
+      .sort((a, b) => parseInt(a.slice(5)) - parseInt(b.slice(5)))
+      .map((f) => {
+        // Sürücü adı: /sys/class/video4linux/videoN/name
+        let name = 'Bilinmeyen cihaz';
+        try {
+          name = fs.readFileSync(`/sys/class/video4linux/${f}/name`, 'utf8').trim();
+        } catch (_) {}
+        return { path: `/dev/${f}`, name };
+      });
+    res.json({ devices });
+  } catch (e) {
+    res.status(500).json({ devices: [], error: e.message });
+  }
+});
+
 app.get('*', (_, res) => res.sendFile(path.join(__dirname, '../frontend/index.html')));
 
 // ─── HTTP + WS Sunucu ──────────────────────────────────────────────────────────
@@ -54,6 +80,8 @@ commandBridge.on('response', (res) => broadcast({ type: 'command_response', data
 
 // Video olayları
 videoRelay.on('error', (msg) => broadcast({ type: 'video_error', error: msg }));
+// Yayın kendiliğinden düşerse arayüz "sinyal yok"a dönsün
+videoRelay.on('stopped', () => broadcast({ type: 'video_status', streaming: false }));
 
 // ─── WebSocket Mesaj İşleyici ─────────────────────────────────────────────────
 wss.on('connection', (ws) => {
@@ -93,7 +121,12 @@ function handleMessage(ws, msg) {
       break;
 
     case 'video_start':
-      videoRelay.startStream(msg.rtspUrl || config.get('video').rtspUrl);
+      videoRelay.startStream({
+        source: msg.source || 'rtsp',
+        url: msg.url || msg.rtspUrl || config.get('video').rtspUrl,
+        device: msg.device || config.get('video').device,
+      });
+      broadcast({ type: 'video_status', ...videoRelay.getStatus() });
       break;
 
     case 'video_stop':
@@ -109,11 +142,13 @@ function handleMessage(ws, msg) {
       ws.send(JSON.stringify({ type: 'settings_saved', success: saved }));
       if (saved) {
         broadcast({ type: 'config_updated', config: config.get() });
-        // Telemetriyi yeni port ile yeniden başlat
-        telemetry.restart();
-        // TCP bağlantısını yeni IP/port ile yeniden kur
-        commandBridge.disconnect();
-        setTimeout(() => commandBridge.connect(), 1000);
+        // Yalnızca RPi ayarları değiştiyse köprüleri yeniden kur. Kamera
+        // kaynağı uygulanırken telemetri bağlantısı boşuna kopmasın.
+        if (msg.settings && msg.settings.rpi) {
+          telemetry.restart();
+          commandBridge.disconnect();
+          setTimeout(() => commandBridge.connect(), 1000);
+        }
       }
       break;
 
