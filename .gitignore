@@ -81,3 +81,5 @@ secrets.yaml
 *.engine
 Object_detection/rf_merge/
 
+node_modules/
+
