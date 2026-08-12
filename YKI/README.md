@@ -135,27 +135,61 @@ YKI/
 
 ### Simüle Telemetri Gönder
 ```bash
-# Python ile test UDP paketi gönder
-python3 -c "
-import socket, json, time, math
-s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-seq = 0
-while True:
-    data = {
-        'seq': seq,
-        'battery': 80 + 10*math.sin(seq/10),
-        'altitude': 100 + 50*math.sin(seq/20),
-        'speed': 10 + 5*math.cos(seq/15),
-        'mode': 'TRACKING' if seq % 20 < 10 else 'IDLE',
-        'tracking': seq % 20 < 10,
-        'rssi': -60 - (seq % 20),
-        'gps': {'lat': 39.925533, 'lon': 32.866287, 'fix': True}
-    }
-    s.sendto(json.dumps(data).encode(), ('127.0.0.1', 5001))
-    seq += 1
-    time.sleep(0.5)
-"
+python3 telemetry_sim.py --mode fake
 ```
+Sinüs dalgalarıyla sahte telemetri üretip `127.0.0.1:5001`'e yollar.
+
+### Unity Simülasyonundan Gerçek Veri (`telemetry_sim.py --mode sim`)
+
+Aynı betik, `Similasyon_Kullanım/` altındaki köprüyü kullanarak Unity
+simülasyonuna bağlanır, `run.py`'deki takip döngüsünün aynısını çalıştırır ve
+gerçek taret/hedef verisini YKI'ya yollar:
+
+```bash
+# Unity'de SteelDomeSim sahnesi Play modundayken:
+python3 telemetry_sim.py                       # otomatik: Unity yoksa sahte veriye düşer
+python3 telemetry_sim.py --mode sim --no-fire  # takip et, ateş etme
+python3 telemetry_sim.py --mode sim --mjpeg-port 8090   # namlu kamerasını da yayınla
+python3 telemetry_sim.py --mode sim --yolo --weights ../Object_detection/best.pt
+```
+
+Kamera görüntüsü için: **Ayarlar > Kamera > MJPEG HTTP Stream** →
+`http://127.0.0.1:8090/stream`
+
+Simülasyon alanlarının YKI göstergelerine karşılığı:
+
+| YKI alanı | Simülasyondaki karşılığı |
+|---|---|
+| `mode` | Takip durumu: `ARAMA` / `TAKIP` / `KILITLI` |
+| `tracking` | Seçili hedef var mı |
+| `altitude` | Hedefin menzil + namlu açısından kestirilen irtifası (m) |
+| `speed` | Taretin dönüş hızı (°/s) |
+| `rssi` | Köprünün kare hızından türetilen bağlantı kalitesi |
+| `battery` | Modellenmiş tüketim (süre + atış sayısı) — simülasyonda batarya yok |
+| `pitch` / `yaw` | Taret açıları (`roll` sabit gövdede daima 0) |
+| `gps` | Sabit mevzi konumu (`--lat` / `--lon` ile değiştirilir) |
+
+Paket ayrıca `target` (sınıf, taraf, menzil, iz kimliği, nişan hatası),
+`turret` (açı/hız/komut) ve `fps`, `shots`, `fire`, `detections` alanlarını taşır.
+
+`run.py` ayrı bir terminalde çalışıyorsa `--passive` ile köprü tarete komut
+göndermez, yalnızca kareleri okuyup telemetri yayınlar (Unity'nin ikinci bir
+istemciye izin vermesi gerekir).
+
+### Kamera Kaynakları
+
+**Ayarlar > Kamera Kaynağı** altında dört kaynak var; seçim `yki_config.json`'a
+yazılır ve sayfa yenilenince korunur.
+
+| Kaynak | Nasıl çalışır | Not |
+|---|---|---|
+| 🎥 Web Kamera | Tarayıcı `getUserMedia` | Yalnızca `localhost` ya da HTTPS'te açılır — ağ üzerinden IP ile girildiğinde tarayıcı izin vermez |
+| 📷 V4L2 Cihaz | Sunucuda FFmpeg → WebSocket (jsmpeg) | `🔍 V4L2 Cihazları Listele` `/api/devices/video`'dan cihazları çeker |
+| 📡 RTSP | Sunucuda FFmpeg → WebSocket | RTSP URL girilmeli |
+| 🌐 MJPEG | Tarayıcı doğrudan `<img>` ile çeker | Simülasyon köprüsü için: `http://127.0.0.1:8090/stream` |
+
+Kaynak açılamazsa hata artık arayüzde bildirilir (FFmpeg'in son hata satırıyla
+birlikte); eskiden sessizce boş ekran kalıyordu.
 
 ### Simüle RTSP Stream
 ```bash

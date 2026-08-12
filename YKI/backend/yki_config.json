@@ -5,11 +5,14 @@
     "udpPort": 5001
   },
   "video": {
+    "source": "mjpeg",
     "rtspUrl": "rtsp://192.168.1.100:8554/camera",
+    "mjpegUrl": "http://127.0.0.1:8090/stream",
+    "device": "/dev/video0",
     "protocol": "rtsp",
     "bitrate": 800,
     "fps": 30,
-    "resolution": "1280x720"
+    "resolution": "640x480"
   },
   "server": {
     "httpPort": 3000,

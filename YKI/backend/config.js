@@ -10,7 +10,13 @@ const DEFAULT_CONFIG = {
     udpPort: 5001,
   },
   video: {
+    // Acilista ve "Kamerayi Uygula" sonrasi hatirlanan kaynak:
+    // webcam | device | rtsp | mjpeg
+    source: 'webcam',
     rtspUrl: 'rtsp://192.168.1.100:8554/camera',
+    // Simulasyon koprusunun yayini: telemetry_sim.py --mjpeg-port 8090
+    mjpegUrl: 'http://127.0.0.1:8090/stream',
+    device: '/dev/video0',
     protocol: 'rtsp',
     bitrate: 800,
     fps: 30,
