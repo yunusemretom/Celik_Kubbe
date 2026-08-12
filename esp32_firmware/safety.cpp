@@ -4,15 +4,20 @@
 #include "uart_protocol.h"
 
 
-
+static bool homingInProgress = false;
+static void cancelHomingIfActive() {
+    if (homingInProgress) {
+        homingInProgress = false;
+        pid_resetVelocityLimitDegS();
+    }
+}
 static SystemState currentState = ST_INIT;
 static uint16_t ammoRemaining = MAX_AMMO_COUNT;
 
 // ---------------- E-STOP DURUMU ----------------
-static volatile bool estopIsrFlag = false;   // ISR sadece bunu set eder, agir is yapmaz
-static bool estopPhysicalActive = false;      // debounce edilmis fiziksel buton durumu
-static bool estopSoftwareActive = false;      
-static bool refereeResetRequested = false;    
+static volatile bool estopIsrFlag = false;
+static bool estopPhysicalActive = false;
+static bool estopSoftwareActive = false;   // CMD_SAFE kaynakli
 static bool lastRawPinState = false;
 static unsigned long lastPinChangeMillis = 0;
 
@@ -20,8 +25,11 @@ static unsigned long lastPinChangeMillis = 0;
 static bool solenoidActive = false;
 static unsigned long solenoidStartMillis = 0;
 
+// ---------------- PROTOKOL DURUMU (CMD_AIM/CMD_MODE takibi) ----------------
+static uint8_t lastCtrlBits = 0;
+static uint8_t currentProtoMode = PROTO_MODE_IDLE;
 
-// ISR: sadece bayrak set eder: 
+
 void IRAM_ATTR estopPinISR() {
     estopIsrFlag = true;
 }
@@ -29,6 +37,12 @@ void IRAM_ATTR estopPinISR() {
 void safety_init() {
     pinMode(ESTOP_PIN, INPUT_PULLUP);
     pinMode(MOSFET4_SOLENOID_PIN, OUTPUT);
+    pinMode(MOSFET1_LASER_PIN, OUTPUT);
+    pinMode(MOSFET2_FEED_MOTOR_PIN, OUTPUT);
+    pinMode(MOSFET3_BEACON_PIN, OUTPUT);
+    digitalWrite(MOSFET1_LASER_PIN, LOW);
+    digitalWrite(MOSFET2_FEED_MOTOR_PIN, LOW);
+    digitalWrite(MOSFET3_BEACON_PIN, LOW);
     digitalWrite(MOSFET4_SOLENOID_PIN, LOW);
 
     attachInterrupt(digitalPinToInterrupt(ESTOP_PIN), estopPinISR, CHANGE);
@@ -36,9 +50,11 @@ void safety_init() {
     ammoRemaining = MAX_AMMO_COUNT;
     currentState = ST_INIT;
 
+    homingInProgress = false;
     estopSoftwareActive = false;
-    refereeResetRequested = false;
     solenoidActive = false;
+    lastCtrlBits = 0;
+    currentProtoMode = PROTO_MODE_IDLE;
 
     lastRawPinState = (digitalRead(ESTOP_PIN) == HIGH);
     estopPhysicalActive = lastRawPinState;
@@ -47,16 +63,17 @@ void safety_init() {
     if (estopPhysicalActive) {
         pid_emergencyStop();
         currentState = ST_EMERGENCY_SHUTDOWN;
+        sendErr(ERR_ESTOP, 0);
         Serial.println("[GUVENLIK] Baslangicta E-Stop basili tespit edildi! Once serbest birakin.");
     }
 }
 
 
 void safety_update() {
-    estopIsrFlag = false;   
+    estopIsrFlag = false;
 
     // ---------------- FIZIKSEL BUTON DEBOUNCE ----------------
-    bool rawState = (digitalRead(ESTOP_PIN) == HIGH);   
+    bool rawState = (digitalRead(ESTOP_PIN) == HIGH);
     if (rawState != lastRawPinState) {
         lastRawPinState = rawState;
         lastPinChangeMillis = millis();
@@ -67,24 +84,13 @@ void safety_update() {
             estopPhysicalActive = rawState;
 
             if (estopPhysicalActive) {
-                
                 pid_emergencyStop();
                 currentState = ST_EMERGENCY_SHUTDOWN;
-                uartSendErrorFlag(ERR_CODE_EMERGENCY_SHUTDOWN);
+                sendErr(ERR_ESTOP, 0);
+                cancelHomingIfActive(); 
                 Serial.println("[GUVENLIK] Fiziksel E-Stop tetiklendi! Sistem kilitlendi.");
             }
-        }
-    }
-
-    // ---------------- HAKEM ONAYLI SIFIRLAMA ----------------
-    if (currentState == ST_EMERGENCY_SHUTDOWN) {
-        bool physicalReleased = !estopPhysicalActive;
-        if (physicalReleased && refereeResetRequested) {
-            estopSoftwareActive = false;
-            refereeResetRequested = false;
-            pid_resumeAfterEstop();
-            currentState = ST_STANDBY;
-            Serial.println("[GUVENLIK] E-Stop sifirlandi (fiziksel serbest + hakem onayi). Sistem STANDBY.");
+            // fiziksel buton serbest kalmasi KENDI BASINA sistemi calisir hale getirmez. 
         }
     }
 
@@ -100,25 +106,45 @@ void safety_update() {
         currentState != ST_SAFE_STOP) {
 
         currentState = ST_SAFE_STOP;
-        pid_emergencyStop();  
-        uartSendErrorFlag(ERR_CODE_AMMO_DEPLETED);
+        pid_emergencyStop();
+        sendErr(ERR_AMMO_DEPLETED, 0);
+        cancelHomingIfActive();   
         Serial.println("[GUVENLIK] Muhimmat bitti! ST_SAFE_STOP.");
     }
+
+    // ---------------- HOMING TAMAMLANMA KONTROLU ----------------
+    if (homingInProgress && pid_isAtTarget(HOMING_TOLERANCE_DEG)) {
+    homingInProgress = false;
+    pid_resetVelocityLimitDegS();
+    currentState = ST_STANDBY;
+    Serial.println("[GUVENLIK] CMD_HOME tamamlandi, sistem STANDBY.");
+}
 }
 
 
-void safety_onEstopCommandFromRPi(bool activateRequested) {
-    if (activateRequested) {
-        estopSoftwareActive = true;
-        pid_emergencyStop();
-        currentState = ST_EMERGENCY_SHUTDOWN;
-        Serial.println("[GUVENLIK] RPi'den yazilimsal E-Stop komutu alindi.");
-    } else {
-       
-        refereeResetRequested = true;
-        Serial.println("[GUVENLIK] Hakem/operator onay istegi alindi, fiziksel buton kontrol ediliyor...");
-    }
+// ---------------- CMD_SAFE (0x04) ----------------
+void safety_onCmdSafe(uint8_t reason) {
+    estopSoftwareActive = true;
+    pid_emergencyStop();
+    currentState = ST_SAFE_STOP;
+    cancelHomingIfActive();   
+    Serial.print("[GUVENLIK] RPi'den CMD_SAFE alindi, sebep kodu: ");
+    Serial.println(reason);
 }
+
+bool safety_tryClearSoftwareSafeStop() {
+    if (estopPhysicalActive) return false;      // fiziksel buton hala basili
+    if (ammoRemaining == 0) return false;        // muhimmat yoksa cikilmaz
+    if (currentState != ST_SAFE_STOP) return false;
+    if (!estopSoftwareActive) return false;      // SAFE_STOP baska sebepten 
+
+    estopSoftwareActive = false;
+    pid_resumeAfterEstop();
+    currentState = ST_STANDBY;
+    Serial.println("[GUVENLIK] Yazilimsal SAFE_STOP temizlendi, sistem STANDBY.");
+    return true;
+}
+
 
 bool safety_isEstopActive() {
     return (currentState == ST_EMERGENCY_SHUTDOWN) || estopPhysicalActive || estopSoftwareActive;
@@ -131,10 +157,52 @@ SystemState safety_getSystemState() {
 
 void safety_setSystemState(SystemState newState) {
     if (currentState == ST_EMERGENCY_SHUTDOWN || currentState == ST_SAFE_STOP) {
-       
         return;
     }
     currentState = newState;
+}
+
+uint8_t safety_getProtocolState() {
+    switch (currentState) {
+        case ST_INIT:               return PROTO_ST_INIT;
+        case ST_STANDBY:            return PROTO_ST_STANDBY;
+        case ST_TRACKING:           return PROTO_ST_TRACKING;
+        case ST_ENGAGING:           return PROTO_ST_ENGAGE;
+        case ST_SAFE_STOP:          return PROTO_ST_SAFE_STOP;
+        case ST_EMERGENCY_SHUTDOWN: return PROTO_ST_SAFE_STOP;  // ayrim FLAG_ESTOP ile
+    }
+    return PROTO_ST_SAFE_STOP;
+}
+
+uint8_t safety_buildTelemetryFlags() {
+    uint8_t flags = 0;
+    if (lastCtrlBits & CTRL_ARM)      flags |= FLAG_ARMED;
+    if (lastCtrlBits & CTRL_MOTOR_EN) flags |= FLAG_MOTORS_ON;
+    if (pid_isAtTarget())             flags |= FLAG_LOCKED;
+    if (safety_isEstopActive())       flags |= FLAG_ESTOP;
+    if (pid_wasAzimuthClamped())      flags |= FLAG_AZ_LIMIT;
+    if (pid_wasElevationClamped())    flags |= FLAG_EL_LIMIT;
+    if (lastCtrlBits & CTRL_LASER)    flags |= FLAG_LASER_ON;
+    if (safety_isAmmoDepleted())      flags |= FLAG_AMMO_EMPTY;
+    return flags;
+}
+
+void safety_setLastCtrlBits(uint8_t ctrl) {
+    lastCtrlBits = ctrl;
+
+    digitalWrite(MOSFET1_LASER_PIN, (ctrl & CTRL_LASER) ? HIGH : LOW);
+
+    // Ikaz lambasi: sistem silahliyken (ARM) veya E-Stop aktifken yansin. (değiştirilebilir - takım kararı değil)
+    bool beaconOn = (ctrl & CTRL_ARM) || safety_isEstopActive();
+    digitalWrite(MOSFET3_BEACON_PIN, beaconOn ? HIGH : LOW);
+}
+uint8_t safety_getLastCtrlBits() { return lastCtrlBits; }
+
+void safety_setMode(uint8_t protoMode) { currentProtoMode = protoMode; }
+uint8_t safety_getMode() { return currentProtoMode; }
+
+bool safety_isHomeAllowed() {
+    return (currentState == ST_INIT) || (currentState == ST_STANDBY);
 }
 
 
@@ -155,7 +223,7 @@ bool safety_isAmmoDepleted() {
 void safety_resetAmmoCount(uint16_t newCount) {
     ammoRemaining = newCount;
 
-    if (newCount > 0 && currentState == ST_SAFE_STOP) {
+    if (newCount > 0 && currentState == ST_SAFE_STOP && !estopSoftwareActive) {
         pid_resumeAfterEstop();
         currentState = ST_STANDBY;
         Serial.println("[GUVENLIK] Muhimmat yenilendi, sistem STANDBY moduna donuyor.");
@@ -180,7 +248,7 @@ bool safety_isRangeValidForTarget(TargetType type, float rangeM) {
         case TARGET_UAV:
             return (rangeM >= RANGE_UAV_MIN_M) && (rangeM <= RANGE_UAV_MAX_M);
     }
-    return false;   
+    return false;
 }
 
 
@@ -191,7 +259,9 @@ FireBlockReason safety_canFire(float currentAzimuthDeg,
                                 bool lidarDataFresh,
                                 bool lidarSignalReliable) {
 
-    if (safety_isEstopActive())                    return FIRE_BLOCKED_ESTOP;
+   
+    if (!(lastCtrlBits & CTRL_ARM))                 return FIRE_BLOCKED_ESTOP; // ARM yok -> asagida ayrica isleniyor
+    if (safety_isEstopActive())                     return FIRE_BLOCKED_ESTOP;
     if (safety_isAmmoDepleted())                    return FIRE_BLOCKED_AMMO_EMPTY;
     if (safety_isInNoFireZone(currentAzimuthDeg))   return FIRE_BLOCKED_NOFIRE_ZONE;
     if (targetIsFriendly)                            return FIRE_BLOCKED_FRIENDLY_TARGET;
@@ -199,13 +269,26 @@ FireBlockReason safety_canFire(float currentAzimuthDeg,
     if (!lidarSignalReliable)                        return FIRE_BLOCKED_LIDAR_UNRELIABLE;
     if (!safety_isRangeValidForTarget(targetType, targetRangeM))
                                                        return FIRE_BLOCKED_OUT_OF_RANGE;
+    if (!pid_isAtTarget())                           return FIRE_BLOCKED_LIDAR_STALE; // "kilitlenme sagli degil" -> NOT_LOCKED'a eslenir
 
     return FIRE_OK;
 }
 
+uint8_t safety_fireResultCode(FireBlockReason reason) {
+    switch (reason) {
+        case FIRE_OK:                       return FIRE_RESULT_OK;
+        case FIRE_BLOCKED_ESTOP:            return FIRE_RESULT_NO_ARM;       // yaklasik: estop/ARM-yok -> NO_ARM
+        case FIRE_BLOCKED_AMMO_EMPTY:       return FIRE_RESULT_NO_AMMO;
+        case FIRE_BLOCKED_NOFIRE_ZONE:      return FIRE_RESULT_NO_FIRE_ZONE;
+        case FIRE_BLOCKED_FRIENDLY_TARGET:  return FIRE_RESULT_NO_FIRE_ZONE; 
+        case FIRE_BLOCKED_LIDAR_STALE:      return FIRE_RESULT_NOT_LOCKED;
+        case FIRE_BLOCKED_LIDAR_UNRELIABLE: return FIRE_RESULT_NOT_LOCKED;
+        case FIRE_BLOCKED_OUT_OF_RANGE:      return FIRE_RESULT_OUT_OF_LIMIT;
+    }
+    return FIRE_RESULT_NOT_LOCKED;
+}
+
 bool safety_fireSolenoid() {
-    // Son savunma hatti: cagiran taraf safety_canFire() kontrolunu
-    // atlamis/eskitmis olsa bile temel guvenlik burada TEKRAR kontrol edilir.
     if (safety_isEstopActive() || safety_isAmmoDepleted()) {
         return false;
     }
@@ -216,4 +299,9 @@ bool safety_fireSolenoid() {
 
     safety_recordShotFired();
     return true;
+}
+
+void safety_startHoming() {
+    homingInProgress = true;
+    pid_setVelocityLimitDegS(HOMING_VELOCITY_LIMIT_DEG_S);
 }

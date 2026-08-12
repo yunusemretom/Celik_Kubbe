@@ -12,48 +12,44 @@ enum AxisId {
 
 // ---------------- TEK BİR EKSENİN PID + HAREKET DURUMU ----------------
 struct AxisControlState {
-    float targetAngleDeg;        // RPi'den gelen hedef açı 
-    float currentAngleDeg;       // encoder.h'den okunan mevcut açı
-    float integral;            
-    float previousError;         
-    unsigned long lastUpdateMicros;  
-    float commandedStepFreqHz;  
-    bool  movingPositive;        // step yönü (DIR pini bu bilgiden türetilir)
+    float targetAngleDeg;
+    float currentAngleDeg;
+    float integral;
+    float previousError;
+    unsigned long lastUpdateMicros;
+    float commandedStepFreqHz;
+    bool  movingPositive;
 };
 
-// GPIO pinlerini (STEP/DIR), LEDC step-üretim kanallarını ve PID durumlarını başlangıç değerlerine ayarlar:
 void pid_init();
 
-// RPi'den gelen yeni hedef açıları ayarlar:
-// Fonksiyon içeride AZIMUTH_MIN_DEG/MAX_DEG ve ELEVATION_MIN_DEG/MAX_DEG limitlerine göre otomatik kırpma (clamp) yapar
+// RPi'den gelen yeni hedef acilari ayarlar. Limitlere gore clamp yapar;
+// clamp olursa pid_wasAzimuthClamped()/pid_wasElevationClamped() bir sonraki cagriya kadar true doner VE otomatik olarak ERR / ERR_AZ_LIMIT|ERR_EL_LIMIT gonderilir
 void pid_setTargetAngles(float azimuthDeg, float elevationDeg);
 
-// Tek bir PID hesap adımı yapar ve step/dir çıkışlarını günceller:
 void pid_update();
 
-// Mevcut (encoder'dan okunan) açı değerlerini döndürür:
 float pid_getCurrentAzimuthDeg();
 float pid_getCurrentElevationDeg();
-
-// Hedef açıları döndürür:
 float pid_getTargetAzimuthDeg();
 float pid_getTargetElevationDeg();
 
-
-// Telemetride taret kilit durumu alanı ve atış-öncesi kontrol için kullanılır:
+// TLM_STATE.flags icin: FLAG_LOCKED
 bool pid_isAtTarget(float toleranceDeg = 0.2f);
 
-// Şu an komuta edilen step frekansını (Hz) döndürür - debug amaçlı yazılacak
+// TLM_STATE.flags icin: FLAG_AZ_LIMIT / FLAG_EL_LIMIT
+bool pid_wasAzimuthClamped();
+bool pid_wasElevationClamped();
+
 float pid_getCommandedStepFreqHz(AxisId axis);
 
-// ---------------- GÜVENLİK / E-STOP ----------------
-// safety.cpp E-Stop tetiklendiğinde bunu çağırır: LEDC step üretimini ANINDA durdurur (duty=0) ve pid_update()'in yeni step üretmesini engeller. Motor sürücü ENABLE pinini de (varsa) devre dışı bırakır.
 void pid_emergencyStop();
-
-// Hakem onayı + fiziksel buton serbest bırakıldıktan sonra safety.cpp tarafından çağrılır - pid_update()'in tekrar hareket üretmesine izin verir. 
+bool pid_isEmergencyStopped(); 
 void pid_resumeAfterEstop();
-
-// PID katsayılarını çalışma zamanında değiştirmek için (saha testinde ayar yapmak amacıyla). Varsayılan değerler config.h'deki PID_KP/PID_KI/PID_KD sabitleridir.
 void pid_setGains(AxisId axis, float kp, float ki, float kd);
+// Homing ozel durumlarda cikis hizini gecici olarak sinirlamak icin.
+// limitDegS <= 0 verilirse yok sayilir (guvenlik).
+void pid_setVelocityLimitDegS(float limitDegS);
+void pid_resetVelocityLimitDegS();   // normal VELOCITY_OUTPUT_LIMIT_DEG_S'e doner
 
-#endif 
+#endif

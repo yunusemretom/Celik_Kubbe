@@ -66,7 +66,7 @@ bool lidar_read(LidarReading &outReading) {
                     rxIndex = 2;
                     parserState = LREAD_BODY;
                 } else {
-                    // ikinci bayt header degilse, gelen bayt YENI bir HDR1 adayi olabilir 
+                    // ikinci bayt header degilse, gelen bayt yeni bir HDR1 adayi olabilir 
                     parserState = (incoming == HEADER_BYTE) ? LWAIT_HDR2 : LWAIT_HDR1;
                 }
                 break;

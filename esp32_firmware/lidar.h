@@ -19,7 +19,7 @@ struct LidarReading {
 void lidar_init();
 
 
-// Gelen bayt akışını tarar. Tam ve checksum'ı doğru bir frame varsa outReading'i doldurur ve true döner. BLOKLAMAZ - loop()/task içinde sürekli çağrılmaya uygundur. 
+// Gelen bayt akışını tarar. Tam ve checksum'ı doğru bir frame varsa outReading'i doldurur ve true döner. BLOKLAMAZ 
 bool lidar_read(LidarReading &outReading);
 
 

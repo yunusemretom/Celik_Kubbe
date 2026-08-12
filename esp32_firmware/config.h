@@ -3,6 +3,7 @@
 
 #include <Arduino.h>
 
+//pinler uyumlu
 #define AZ_ENCODER_I2C_ADDR    0x36   // AS5600, Wire (hat 1) - yaty eksen
 #define ELEV_ENCODER_I2C_ADDR  0x36   // AS5600, Wire1 (hat 2) - dikey açı
 #define AZ_STEP_PIN      4
@@ -12,11 +13,11 @@
 #define ELEV_DIR_PIN     8
 #define ELEV_EN_PIN      9
 
-//Değişecek
-#define AZ_I2C_SDA_PIN     35   
-#define AZ_I2C_SCL_PIN     36   
-#define ELEV_I2C_SDA_PIN   37   
-#define ELEV_I2C_SCL_PIN   38   
+//pinler uyumlu
+#define AZ_I2C_SDA_PIN     1   
+#define AZ_I2C_SCL_PIN     2   
+#define ELEV_I2C_SDA_PIN   41   
+#define ELEV_I2C_SCL_PIN   42
 
 // ==================== UART - RPi HABERLEŞME PINLERI ====================
 #define RPI_UART_RX_PIN     16
@@ -49,6 +50,9 @@
 #define PID_KP              1.0f
 #define PID_KI              0.0f
 #define PID_KD              0.1f
+
+// ==================== HOMING (CMD_HOME) HIZ LIMITI ====================
+#define HOMING_VELOCITY_LIMIT_DEG_S   15.0f   
 
 // ==================== HAREKET SINIRLARI ==================== 
 #define AZIMUTH_MIN_DEG     -180.0f
@@ -108,4 +112,4 @@ enum SystemState {
 #define TASK_STACK_UART         4096
 #define TASK_STACK_LIDAR        2048
 
-#endif // CONFIG_H
+#endif 
