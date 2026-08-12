@@ -1,0 +1,27 @@
+{
+  "rpi": {
+    "ip": "192.168.1.100",
+    "tcpPort": 5000,
+    "udpPort": 5001
+  },
+  "video": {
+    "rtspUrl": "rtsp://192.168.1.100:8554/camera",
+    "protocol": "rtsp",
+    "bitrate": 800,
+    "fps": 30,
+    "resolution": "1280x720"
+  },
+  "server": {
+    "httpPort": 3000,
+    "wsPort": 3000,
+    "videoWsPort": 8081
+  },
+  "vehicle": {
+    "name": "Çelik Kubbe",
+    "teamName": "Pars Takımı",
+    "systemId": 1
+  },
+  "operation": {
+    "mode": "manual"
+  }
+}
