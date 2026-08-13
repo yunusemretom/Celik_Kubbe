@@ -49,8 +49,10 @@ Seri format (--format text, varsayilan):
     Cozum: bu tarafi --deadzone 0 ile calistirip isi Arduino'ya birakin.
 
 Seri format (--format packet):
-    esp32_firmware/uart_protocol.h'deki 14 byte'lik UartPacket,
-    msgId = MSG_MOVE_TARGET_ANGLES, targetAzimuth = sag X, targetElevation = sag Y.
+    PARS UART protokolu v1.3 (esp32_firmware/uart_protocol.h) CMD_AIM cercevesi:
+      0xAA 0x55 | 0x01 | 10 | seq + azimuth(f32) + elevasyon(f32) + ctrl | crc16
+    CRC-16/CCITT-FALSE. Bu bicim esp32_firmware icindir; joystick_motor.ino
+    metin bicimini bekler.
 
 Kutuphane olarak:
     from joyistik_control import XboxController, ArduinoLink
@@ -138,11 +140,10 @@ FINE_RATE_SCALE = 0.20
 DPAD_STEP_DEG = 1.0
 
 # ==================== CTRL_BITS (uart_protocol.h ile ayni) ====================
-CTRL_BIT_FIRE_REQUEST = 1 << 0
-CTRL_BIT_LASER_ON = 1 << 1
-CTRL_BIT_AUTONOMOUS_MODE = 1 << 2
-CTRL_BIT_TARGET_FRIENDLY = 1 << 3
-CTRL_BIT_ESTOP_ACTIVE = 1 << 4
+CTRL_ARM = 0x01       # bit0 - emniyet mandali; 0 iken firmware ates etmez
+CTRL_LASER = 0x02     # bit1 - hedefleme lazeri
+CTRL_MOTOR_EN = 0x04  # bit2 - motor suruculer etkin
+CTRL_NO_FIRE = 0x08   # bit3 - hedef atisa yasak bolgede
 
 # ==================== SERI ILETISIM (Arduino / ESP32) ====================
 #: Sartname geregi haberlesme hizi (config.h -> RPI_UART_BAUD ile ayni).
@@ -199,19 +200,28 @@ MOTOR_OLU_BOLGE = 0.12
 SERVO_RT_ESIK = 0.05
 
 #: Atis servosu bir tetik gibi calisir: her "tik"te ileri gidip geri doner.
-#: RT yalnizca saniyede kac tik atilacagini belirler. Bu iki deger
-#: joystick_motor.ino'daki ATIS_MIN_HZ / ATIS_MAX_HZ ile ayni tutulmalidir;
-#: titresim her tikta bir darbe verebilsin diye PC de ayni hesabi yapar.
-ATIS_MIN_HZ = 0.7
-ATIS_MAX_HZ = 3.5
+#: RT yalnizca SURELERI ayarlar. Bu ucu joystick_motor.ino'daki ayni isimli
+#: sabitlerle ayni tutulmalidir; titresim her tikta bir darbe verebilsin diye
+#: PC de tik frekansini ayni formulle hesaplar.
+ATIS_SURE_YAVAS_MS = 600.0
+ATIS_SURE_HIZLI_MS = 150.0
+ATIS_ARA_MS = 60.0
+
+
+def atis_yon_suresi_ms(rt: float) -> float:
+    """RT'den, servonun her yonde kalacagi sureyi (ms) verir."""
+    oran = min(max((rt - SERVO_RT_ESIK) / (1.0 - SERVO_RT_ESIK), 0.0), 1.0)
+    return ATIS_SURE_YAVAS_MS - oran * (ATIS_SURE_YAVAS_MS - ATIS_SURE_HIZLI_MS)
 
 
 def atis_hizi_hz(rt: float) -> float:
-    """RT degerinden saniyedeki tik sayisini hesaplar (sketch ile ayni formul)."""
+    """RT degerinden saniyedeki tik sayisini hesaplar (sketch ile ayni formul).
+
+    Bir tik = ileri (sure) + geri (sure) + tikler arasi kisa durus.
+    """
     if rt < SERVO_RT_ESIK:
         return 0.0
-    oran = min((rt - SERVO_RT_ESIK) / (1.0 - SERVO_RT_ESIK), 1.0)
-    return ATIS_MIN_HZ + oran * (ATIS_MAX_HZ - ATIS_MIN_HZ)
+    return 1000.0 / (2.0 * atis_yon_suresi_ms(rt) + ATIS_ARA_MS)
 
 
 def motor_orani(deger: float) -> float:
@@ -226,11 +236,22 @@ def motor_orani(deger: float) -> float:
         return 0.0
     return (buyukluk - MOTOR_OLU_BOLGE) / (1.0 - MOTOR_OLU_BOLGE)
 
-#: uart_protocol.h ile ayni paket sabitleri.
-UART_PREAMBLE = 0xAA55
-UART_PACKET_SIZE = 14
-UART_CRC_POLY = 0xA001  # CRC-16/MODBUS
-MSG_MOVE_TARGET_ANGLES = 0x01
+# ==================== PARS UART PROTOKOLU v1.3 ====================
+# esp32_firmware/uart_protocol.h ile birebir ayni olmalidir. Cerceve:
+#
+#   0xAA 0x55 | msgId(1) | len(1) | payload(len) | crc_lo | crc_hi
+#
+# CRC-16/CCITT-FALSE, msgId'den payload sonuna kadar hesaplanir (preamble ve
+# CRC alaninin kendisi haric) ve little-endian yazilir.
+UART_PREAMBLE_1 = 0xAA
+UART_PREAMBLE_2 = 0x55
+UART_CRC_POLY = 0x1021   # CRC-16/CCITT-FALSE
+UART_CRC_INIT = 0xFFFF
+UART_MAX_PAYLOAD = 32
+
+#: RPi -> ESP32 mesaj kimlikleri (protokolde tanimli olanlarin kullandiklarimiz).
+CMD_AIM = 0x01     # LEN 10: seq(1) + azimuth(f32) + elevasyon(f32) + ctrl(1)
+CMD_FIRE = 0x02    # LEN 2 : shotCount(1) + targetId(1)
 
 
 class JoystickError(RuntimeError):
@@ -495,16 +516,19 @@ class TurretCommand:
 
     @property
     def ctrl_bits(self) -> int:
-        """uart_protocol.h'deki CTRL_BITS baytini uretir."""
+        """CMD_AIM payload'undaki ctrl baytini uretir (uart_protocol.h v1.3).
+
+        Protokolde ates istegi ctrl icinde tasinmaz; ayri bir CMD_FIRE mesaji
+        vardir. Buradaki CTRL_ARM yalnizca "emniyet acik" demektir, firmware
+        ates icin bu biti ve FLAG_LOCKED'i birlikte arar.
+        """
         bits = 0
         if self.fire:
-            bits |= CTRL_BIT_FIRE_REQUEST
+            bits |= CTRL_ARM          # tetik cekilmis -> emniyet acik
         if self.laser:
-            bits |= CTRL_BIT_LASER_ON
-        if self.autonomous:
-            bits |= CTRL_BIT_AUTONOMOUS_MODE
-        if self.estop:
-            bits |= CTRL_BIT_ESTOP_ACTIVE
+            bits |= CTRL_LASER
+        if not self.estop:
+            bits |= CTRL_MOTOR_EN     # E-Stop'ta suruculer devre disi kalir
         return bits
 
 
@@ -771,33 +795,40 @@ class HapticFeedback:
         self.pad.stop_rumble()
 
 
-def crc16_modbus(data: bytes) -> int:
-    """CRC-16/MODBUS - uart_protocol.cpp'deki calculateCRC16 ile ayni."""
-    crc = 0xFFFF
-    for byte in data:
-        crc ^= byte
-        for _ in range(8):
-            if crc & 0x0001:
-                crc = (crc >> 1) ^ UART_CRC_POLY
-            else:
-                crc >>= 1
-    return crc & 0xFFFF
+def crc16_ccitt_false(data: bytes) -> int:
+    """CRC-16/CCITT-FALSE - uart_protocol.cpp'deki ayni isimli fonksiyonla ayni.
 
-
-def build_uart_packet(
-    azimuth: float,
-    elevation: float,
-    msg_id: int = MSG_MOVE_TARGET_ANGLES,
-    ctrl_bits: int = 0,
-) -> bytes:
-    """esp32_firmware/uart_protocol.h'deki 14 byte'lik UartPacket'i uretir.
-
-    CRC, firmware ile ayni sekilde msgId'den ctrlBits'e kadar olan 9 byte
-    uzerinden hesaplanir (preamble ve crc alanlari haric).
+    Protokol dokumanindaki dogrulama testi: crc16_ccitt_false(b"\\x00\\x00")
+    sonucu 0x1D0F olmalidir.
     """
-    body = struct.pack("<BffB", msg_id, azimuth, elevation, ctrl_bits)
-    crc = crc16_modbus(body)
-    return struct.pack("<H", UART_PREAMBLE) + body + struct.pack("<H", crc)
+    crc = UART_CRC_INIT
+    for byte in data:
+        crc ^= byte << 8
+        for _ in range(8):
+            if crc & 0x8000:
+                crc = ((crc << 1) ^ UART_CRC_POLY) & 0xFFFF
+            else:
+                crc = (crc << 1) & 0xFFFF
+    return crc
+
+
+def build_frame(msg_id: int, payload: bytes = b"") -> bytes:
+    """PARS UART v1.3 cercevesi uretir (sendFrame'in Python karsiligi)."""
+    if len(payload) > UART_MAX_PAYLOAD:
+        raise ValueError(f"payload en fazla {UART_MAX_PAYLOAD} byte olabilir")
+    body = bytes([msg_id, len(payload)]) + payload
+    return bytes([UART_PREAMBLE_1, UART_PREAMBLE_2]) + body + struct.pack("<H", crc16_ccitt_false(body))
+
+
+def build_cmd_aim(
+    azimuth: float, elevation: float, ctrl: int = 0, seq: int = 0
+) -> bytes:
+    """CMD_AIM cercevesi (LEN 10): seq + azimuth + elevasyon + ctrl.
+
+    seq 0..255 arasinda dolasir; firmware kayip paket saymak icin kullanir.
+    """
+    payload = struct.pack("<BffB", seq & 0xFF, azimuth, elevation, ctrl)
+    return build_frame(CMD_AIM, payload)
 
 
 def find_serial_port() -> Optional[str]:
@@ -1114,9 +1145,12 @@ class ArduinoLink:
     def _payload(self, x: float, y: float, rt: float) -> bytes:
         """Gonderilecek baytlari uretir (iki tasima da bunu kullanir).
 
-        text   : "<dikey>,<yatay>,<rt>\\n"  - rt 0..1, atis servosunun hizi
-        packet : uart_protocol.h paketi; rt esigi gecince FIRE_REQUEST biti
-                 kalkar (binary protokolde ayri bir hiz alani yok).
+        text   : "<dikey>,<yatay>,<rt>\\n"  - joystick_motor.ino'nun bekledigi
+                 bicim; rt atis servosunun tik hizidir.
+        packet : PARS UART v1.3 CMD_AIM cercevesi - esp32_firmware icindir.
+                 Protokolde atis hizi alani yoktur; RT esigi gecince yalnizca
+                 CTRL_ARM biti kalkar, asil ates emri ayri bir CMD_FIRE
+                 mesajidir (bu katman onu gondermez).
         """
         if self.fmt == "text":
             # "-0.000" yerine "0.000" gitsin (eksi sifir cirkin gorunuyor).
@@ -1124,8 +1158,11 @@ class ArduinoLink:
             n = self.decimals
             return f"{x:.{n}f},{y:.{n}f},{rt:.{n}f}\n".encode("ascii")
 
-        ctrl = CTRL_BIT_FIRE_REQUEST if rt >= DEFAULT_FIRE_THRESHOLD else 0
-        return build_uart_packet(x, y, ctrl_bits=ctrl)
+        ctrl = CTRL_MOTOR_EN
+        if rt >= DEFAULT_FIRE_THRESHOLD:
+            ctrl |= CTRL_ARM
+        self._seq = (getattr(self, "_seq", -1) + 1) & 0xFF
+        return build_cmd_aim(x, y, ctrl=ctrl, seq=self._seq)
 
     def _read_lines(self) -> None:
         """Arduino'nun bastigi satirlari okur (teshis icin, bloke etmez)."""
