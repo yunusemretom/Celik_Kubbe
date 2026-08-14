@@ -14,6 +14,9 @@
 #define VELOCITY_OUTPUT_LIMIT_DEG_S  200.0f
 #define DEAD_BAND_DEG                 0.03f
 
+// Hiz modunda "durdu" sayilan esik (derece/saniye)
+#define VELOCITY_STOPPED_DEG_S        1.0f
+
 static AxisControlState azState;
 static AxisControlState elevState;
 
@@ -27,6 +30,7 @@ static AxisGains elevGains = { PID_KP, PID_KI, PID_KD };
 
 static bool estopped = true;
 static float currentVelocityLimitDegS = VELOCITY_OUTPUT_LIMIT_DEG_S;
+static PidControlMode controlMode = PID_MODE_POSITION;
 
 // Son pid_setTargetAngles() cagrisinda hangi eksen(ler) kirpildi (clamp).
 static bool azClampedFlag   = false;
@@ -41,6 +45,10 @@ static void resetAxisState(AxisControlState &axis, float initialAngleDeg) {
     axis.lastUpdateMicros   = micros();
     axis.commandedStepFreqHz = 0.0f;
     axis.movingPositive     = true;
+
+    axis.velocityCmdDegS    = 0.0f;
+    axis.velocityActualDegS = 0.0f;
+    axis.estimatedAngleDeg  = 0.0f;
 }
 
 
@@ -71,11 +79,79 @@ void pid_init() {
     azClampedFlag = false;
     elevClampedFlag = false;
 
+    controlMode = PID_MODE_POSITION;
     estopped = false;
 }
 
 
+// ====================================================================
+// KONTROL MODU
+// ====================================================================
+void pid_setControlMode(PidControlMode mode) {
+    if (mode == controlMode) return;
+
+    // Mod degisiminde motoru durdur: iki mod arasinda hiz/hedef durumu
+    // tasinirsa taret ani sicrama yapar.
+    ledcWrite(AZ_STEP_PIN, 0);
+    ledcWrite(ELEV_STEP_PIN, 0);
+
+    azState.velocityCmdDegS    = 0.0f;
+    azState.velocityActualDegS = 0.0f;
+    azState.commandedStepFreqHz = 0.0f;
+    elevState.velocityCmdDegS    = 0.0f;
+    elevState.velocityActualDegS = 0.0f;
+    elevState.commandedStepFreqHz = 0.0f;
+
+    azState.integral = 0.0f;   azState.previousError = 0.0f;
+    elevState.integral = 0.0f; elevState.previousError = 0.0f;
+    azState.lastUpdateMicros = micros();
+    elevState.lastUpdateMicros = micros();
+
+    if (mode == PID_MODE_POSITION) {
+        // Kapali cevrime donerken hedefi mevcut konuma esitle, yoksa
+        // eski hedefe dogru aniden kosar.
+        azState.targetAngleDeg   = encoder_getAzimuthDeg();
+        elevState.targetAngleDeg = encoder_getElevationDeg();
+    } else {
+        azState.targetAngleDeg   = azState.estimatedAngleDeg;
+        elevState.targetAngleDeg = elevState.estimatedAngleDeg;
+    }
+
+    controlMode = mode;
+    Serial.print("[PID] Kontrol modu: ");
+    Serial.println(mode == PID_MODE_VELOCITY ? "HIZ (acik cevrim, joystick)"
+                                             : "POZISYON (PID, encoder)");
+}
+
+PidControlMode pid_getControlMode() {
+    return controlMode;
+}
+
+
+void pid_setVelocityCommand(float azDegS, float elevDegS) {
+    if (azDegS >  currentVelocityLimitDegS) azDegS =  currentVelocityLimitDegS;
+    if (azDegS < -currentVelocityLimitDegS) azDegS = -currentVelocityLimitDegS;
+    if (elevDegS >  currentVelocityLimitDegS) elevDegS =  currentVelocityLimitDegS;
+    if (elevDegS < -currentVelocityLimitDegS) elevDegS = -currentVelocityLimitDegS;
+
+    azState.velocityCmdDegS   = azDegS;
+    elevState.velocityCmdDegS = elevDegS;
+}
+
+
+void pid_zeroPositionEstimate() {
+    azState.estimatedAngleDeg   = 0.0f;
+    elevState.estimatedAngleDeg = 0.0f;
+    azState.currentAngleDeg     = 0.0f;
+    elevState.currentAngleDeg   = 0.0f;
+    Serial.println("[PID] Pozisyon tahmini sifirlandi (taret 0/0 kabul edildi).");
+}
+
+
 void pid_setTargetAngles(float azimuthDeg, float elevationDeg) {
+    // Hiz modunda joystick tek efendidir; CMD_AIM burada yok sayilir.
+    if (controlMode == PID_MODE_VELOCITY) return;
+
     float requestedAz = azimuthDeg;
     float requestedEl = elevationDeg;
 
@@ -99,6 +175,29 @@ void pid_setTargetAngles(float azimuthDeg, float elevationDeg) {
 }
 
 
+// ---------- ORTAK: hesaplanan hizi step pinine uygula ----------
+static void applyStepOutput(AxisControlState &axis, int stepPin, int dirPin,
+                            float velocityDegPerSec) {
+    axis.movingPositive = (velocityDegPerSec >= 0.0f);
+    digitalWrite(dirPin, axis.movingPositive ? HIGH : LOW);
+
+    float stepFreqHz = fabs(velocityDegPerSec) / DEGREES_PER_STEP;
+    if (stepFreqHz > MAX_STEP_FREQ_HZ) stepFreqHz = MAX_STEP_FREQ_HZ;
+
+    if (stepFreqHz < MIN_STEP_FREQ_HZ) {
+        axis.commandedStepFreqHz = 0.0f;
+        ledcWrite(stepPin, 0);
+    } else {
+        axis.commandedStepFreqHz = stepFreqHz;
+        ledcChangeFrequency(stepPin, (uint32_t)stepFreqHz, LEDC_RESOLUTION_BITS);
+        ledcWrite(stepPin, LEDC_DUTY_50_PERCENT);
+    }
+}
+
+
+// ====================================================================
+// KAPALI CEVRIM (POZISYON) - encoder geri beslemeli, degistirilmedi
+// ====================================================================
 static void updateAxis(AxisControlState &axis, int stepPin, int dirPin,
                         const AxisGains &gains,
                         float (*readEncoderDeg)()) {
@@ -131,25 +230,77 @@ static void updateAxis(AxisControlState &axis, int stepPin, int dirPin,
     if (velocityDegPerSec > currentVelocityLimitDegS)  velocityDegPerSec = currentVelocityLimitDegS;
     if (velocityDegPerSec < -currentVelocityLimitDegS) velocityDegPerSec = -currentVelocityLimitDegS;
 
-    axis.movingPositive = (velocityDegPerSec >= 0.0f);
-    digitalWrite(dirPin, axis.movingPositive ? HIGH : LOW);
+    applyStepOutput(axis, stepPin, dirPin, velocityDegPerSec);
+}
 
-    float stepFreqHz = fabs(velocityDegPerSec) / DEGREES_PER_STEP;
-    if (stepFreqHz > MAX_STEP_FREQ_HZ) stepFreqHz = MAX_STEP_FREQ_HZ;
 
-    if (stepFreqHz < MIN_STEP_FREQ_HZ) {
-        axis.commandedStepFreqHz = 0.0f;
-        ledcWrite(stepPin, 0);
-    } else {
-        axis.commandedStepFreqHz = stepFreqHz;
-        ledcChangeFrequency(stepPin, (uint32_t)stepFreqHz, LEDC_RESOLUTION_BITS);
-        ledcWrite(stepPin, LEDC_DUTY_50_PERCENT);
-    }
+// ====================================================================
+// ACIK CEVRIM (HIZ) - joystick / encoder yokken
+//
+// Eski joystick_motor.ino'daki rampaGuncelle() mantiginin ayni gorevi
+// yapan hali. Farklari:
+//   - adim/sn yerine derece/sn ile calisir (protokolle ayni birim)
+//   - step palslerini bit-bang degil LEDC uretir (pid ile ayni cikis
+//     katmani, pin cakismasi yok)
+//   - pozisyon tahmini tutulur, boylece ELEVATION_MIN/MAX ve
+//     NOFIRE_ZONE kontrolleri encoder olmadan da calisir
+// ====================================================================
+static void updateAxisVelocity(AxisControlState &axis, int stepPin, int dirPin,
+                                float minDeg, float maxDeg) {
+    unsigned long now = micros();
+    float dt = (now - axis.lastUpdateMicros) / 1000000.0f;
+    if (dt <= 0.0f || dt > 0.5f) dt = 0.001f;
+    axis.lastUpdateMicros = now;
+
+    float cmd = axis.velocityCmdDegS;
+
+    // --- HAREKET LIMITI: limite dayandiysa o yone gitmeyi kes ---
+    if (cmd > 0.0f && axis.estimatedAngleDeg >= maxDeg) cmd = 0.0f;
+    if (cmd < 0.0f && axis.estimatedAngleDeg <= minDeg) cmd = 0.0f;
+
+    // --- Yon degisimi: once sifira in, sonra ters yone cik ---
+    // Duran bir step motoru dogrudan ters yone surmek adim kacirtir.
+    bool tersYone = (cmd != 0.0f && axis.velocityActualDegS != 0.0f &&
+                     ((cmd > 0.0f) != (axis.velocityActualDegS > 0.0f)));
+    if (tersYone) cmd = 0.0f;
+
+    // --- Rampa: yavaslarken daha sert ivme (tus birakilinca kaymasin) ---
+    float ivme = (fabs(cmd) >= fabs(axis.velocityActualDegS))
+                    ? VEL_ACCEL_DEG_S2 : VEL_DECEL_DEG_S2;
+
+    float fark = cmd - axis.velocityActualDegS;
+    float adim = ivme * dt;
+
+    if (fark >  adim)      axis.velocityActualDegS += adim;
+    else if (fark < -adim) axis.velocityActualDegS -= adim;
+    else                   axis.velocityActualDegS = cmd;
+
+    if (fabs(axis.velocityActualDegS) < 0.05f) axis.velocityActualDegS = 0.0f;
+
+    // --- Pozisyon tahmini (komut edilen hizin integrali) ---
+    // NOT: bu gercek olculmus aci DEGILDIR. Kacan adimlar birikir.
+    // Encoder takilirsa PID_MODE_POSITION'a gecin.
+    axis.estimatedAngleDeg += axis.velocityActualDegS * dt;
+    if (axis.estimatedAngleDeg > maxDeg) axis.estimatedAngleDeg = maxDeg;
+    if (axis.estimatedAngleDeg < minDeg) axis.estimatedAngleDeg = minDeg;
+
+    axis.currentAngleDeg = axis.estimatedAngleDeg;
+    axis.targetAngleDeg  = axis.estimatedAngleDeg;   // telemetri tutarli kalsin
+
+    applyStepOutput(axis, stepPin, dirPin, axis.velocityActualDegS);
 }
 
 
 void pid_update() {
     if (estopped) {
+        return;
+    }
+
+    if (controlMode == PID_MODE_VELOCITY) {
+        updateAxisVelocity(azState,   AZ_STEP_PIN,   AZ_DIR_PIN,
+                           AZIMUTH_MIN_DEG,   AZIMUTH_MAX_DEG);
+        updateAxisVelocity(elevState, ELEV_STEP_PIN, ELEV_DIR_PIN,
+                           ELEVATION_MIN_DEG, ELEVATION_MAX_DEG);
         return;
     }
 
@@ -165,6 +316,11 @@ float pid_getTargetElevationDeg()  { return elevState.targetAngleDeg; }
 
 
 bool pid_isAtTarget(float toleranceDeg) {
+    if (controlMode == PID_MODE_VELOCITY) {
+        // Hiz modunda "kilitli" = taret duruyor demektir.
+        return (fabs(azState.velocityActualDegS)   < VELOCITY_STOPPED_DEG_S) &&
+               (fabs(elevState.velocityActualDegS) < VELOCITY_STOPPED_DEG_S);
+    }
     bool azOk   = fabs(azState.targetAngleDeg - azState.currentAngleDeg) <= toleranceDeg;
     bool elevOk = fabs(elevState.targetAngleDeg - elevState.currentAngleDeg) <= toleranceDeg;
     return azOk && elevOk;
@@ -178,15 +334,25 @@ float pid_getCommandedStepFreqHz(AxisId axis) {
     return (axis == AXIS_AZIMUTH) ? azState.commandedStepFreqHz : elevState.commandedStepFreqHz;
 }
 
+float pid_getVelocityDegS(AxisId axis) {
+    return (axis == AXIS_AZIMUTH) ? azState.velocityActualDegS : elevState.velocityActualDegS;
+}
+
 
 void pid_emergencyStop() {
     estopped = true;
     ledcWrite(AZ_STEP_PIN, 0);
     ledcWrite(ELEV_STEP_PIN, 0);
+
     digitalWrite(AZ_EN_PIN, HIGH);
     azState.commandedStepFreqHz = 0.0f;
+    azState.velocityCmdDegS     = 0.0f;
+    azState.velocityActualDegS  = 0.0f;
+
     digitalWrite(ELEV_EN_PIN, HIGH);
     elevState.commandedStepFreqHz = 0.0f;
+    elevState.velocityCmdDegS     = 0.0f;
+    elevState.velocityActualDegS  = 0.0f;
 }
 
 bool pid_isEmergencyStopped() {
@@ -200,10 +366,20 @@ void pid_resumeAfterEstop() {
     azState.integral = 0.0f;
     azState.previousError = 0.0f;
     azState.lastUpdateMicros = micros();
+    azState.velocityCmdDegS = 0.0f;
+    azState.velocityActualDegS = 0.0f;
 
     elevState.integral = 0.0f;
     elevState.previousError = 0.0f;
     elevState.lastUpdateMicros = micros();
+    elevState.velocityCmdDegS = 0.0f;
+    elevState.velocityActualDegS = 0.0f;
+
+    // Kapali cevrimde eski hedefe kosmasin: hedefi mevcut konuma esitle.
+    if (controlMode == PID_MODE_POSITION) {
+        azState.targetAngleDeg   = encoder_getAzimuthDeg();
+        elevState.targetAngleDeg = encoder_getElevationDeg();
+    }
 
     estopped = false;
 }

@@ -68,6 +68,66 @@ static void resyncAfterFailedFrame() {
 
 static void dispatchMessage(uint8_t id, const uint8_t *p, uint8_t len); // ileri bildirim (asagida tanimli)
 
+// ID + ham payload bayt dizisini ilgili on_XXX() callback'ine yonlendirir.
+// Payload'lari uart_protocol.h'deki struct'lara (little-endian, ESP32 native) ayristirir.
+static void dispatchMessage(uint8_t id, const uint8_t *p, uint8_t len) {
+    switch (id) {
+
+        case CMD_HEARTBEAT:
+            onCmdHeartbeat();
+            break;
+
+        case CMD_AIM: {
+            if (len < 10) break;   // seq(1)+az(4)+el(4)+ctrl(1)
+            CmdAimPayload payload;
+            payload.seq = p[0];
+            memcpy(&payload.azimuthDeg, &p[1], 4);
+            memcpy(&payload.elevationDeg, &p[5], 4);
+            payload.ctrl = p[9];
+            onCmdAim(payload);
+            break;
+        }
+
+        case CMD_FIRE: {
+            if (len < 2) break;    // shotCount(1)+targetId(1)
+            CmdFirePayload payload;
+            payload.shotCount = p[0];
+            payload.targetId = p[1];
+            onCmdFire(payload);
+            break;
+        }
+
+        case CMD_MODE:
+            if (len < 1) break;
+            onCmdMode(p[0]);
+            break;
+
+        case CMD_SAFE:
+            if (len < 1) break;
+            onCmdSafe(p[0]);
+            break;
+
+        case CMD_HOME:
+            onCmdHome();
+            break;
+
+        case CMD_PID: {
+            if (len < 13) break;   // axis(1)+kp(4)+ki(4)+kd(4)
+            CmdPidPayload payload;
+            payload.axis = p[0];
+            memcpy(&payload.kp, &p[1], 4);
+            memcpy(&payload.ki, &p[5], 4);
+            memcpy(&payload.kd, &p[9], 4);
+            onCmdPid(payload);
+            break;
+        }
+
+        default:
+            // Bilinmeyen MSG_ID - sessizce yok say (PDF'te tanimli bir hata kodu yok).
+            break;
+    }
+}
+
 static void feedByte(uint8_t c) {
     switch (parserState) {
 
@@ -152,6 +212,23 @@ static void feedByte(uint8_t c) {
             break;
         }
     }
+}
+
+void uartProtocolInit() {
+    rpiSerial.begin(RPI_UART_BAUD, SERIAL_8N1, RPI_UART_RX_PIN, RPI_UART_TX_PIN);
+ 
+    parserState = WAIT_A;
+    frameRawLen = 0;
+    rxIdx = 0;
+    consecutiveCrcErrors = 0;
+ 
+    // Baslangicta "az once gecerli paket geldi" varsayiyoruz, aksi halde
+    // ESP32 daha ilk saniyede failsafe'e (UART_FAILSAFE_MS) girer.
+    lastValidPacketMillis = millis();
+}
+ 
+unsigned long uartProtocolMsSinceLastValidPacket() {
+    return millis() - lastValidPacketMillis;
 }
 
 bool uartProtocolPoll() {

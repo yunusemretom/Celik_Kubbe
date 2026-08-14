@@ -8,6 +8,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link href="https://fonts.googleapis.com/css2?family=Share+Tech+Mono&family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet" />
   <link rel="stylesheet" href="css/style.css" />
+  <link rel="stylesheet" href="css/joystick.css"/>
 </head>
 <body>
   <!-- ─── NAV BAR ─────────────────────────────────────────────────── -->
@@ -139,7 +140,17 @@
           <div class="ch-v"></div>
           <div class="ch-center"></div>
         </div>
-
+        <!-- Sanal Joystick -->
+        <div id="joystick-panel" class="overlay-panel">
+          <div id="joystick-taban">
+            <div id="joystick-topuz"></div>
+          </div>
+          <div id="joystick-yan-kontroller">
+            <button id="joystick-arm" type="button">ARM: KAPALI</button>
+            <button id="joystick-fire"> ATEŞ (Space Basılı Tut) </button>
+            <div id="joystick-oku"> pitch 0.00 yaw 0.00 fire 0</div>
+          </div>
+        </div>
         <div id="side-panel-stack" class="side-panel-stack">
           <!-- Instrument Panel -->
           <div id="instrument-panel" class="instrument-panel hidden">
@@ -293,7 +304,7 @@
     </select>
   </div>
   <button id="btn-enumerate-v4l2" class="btn btn-secondary full-width">
-    🔍 V4L2 Cihazları Listele
+    V4L2 Cihazları Listele
   </button>
 </div>
           <!-- MJPEG -->
@@ -468,6 +479,7 @@
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
   <script src="js/websocket.js"></script>
   <script src="js/dashboard.js"></script>
+  <script src="js/joystick.js"></script>
   <script src="js/telemetry.js"></script>
   <script src="js/settings.js"></script>
   <script src="js/about.js"></script>

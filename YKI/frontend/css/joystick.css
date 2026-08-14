@@ -1,0 +1,105 @@
+/* joystick.css
+   ------------
+   YKI'nin mevcut style.css'indeki CSS degiskenlerini (--bg-*, --accent,
+   --border*, --font-mono vb.) kullanir, boylece navbar/panel temasiyla
+   birebir uyumludur. .overlay-panel sinifi zaten style.css'te tanimli
+   (position:absolute; z-index:10), bu dosya sadece ic gorunumu tanimlar.
+*/
+
+#joystick-panel {
+  bottom: 20px;
+  left: 20px;
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 12px;
+  background: rgba(14, 16, 18, 0.85);
+  backdrop-filter: blur(8px);
+  border: 1px solid var(--border-light);
+  border-radius: var(--radius);
+  user-select: none;
+  touch-action: none;
+}
+
+#joystick-taban {
+  position: relative;
+  width: 120px;
+  height: 120px;
+  border-radius: 50%;
+  background: radial-gradient(circle at 50% 50%, var(--bg-tertiary) 0%, var(--bg-primary) 100%);
+  border: 2px solid var(--border-light);
+  flex-shrink: 0;
+}
+
+#joystick-topuz {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 42px;
+  height: 42px;
+  margin-left: -21px;
+  margin-top: -21px;
+  border-radius: 50%;
+  background: var(--accent);
+  box-shadow: var(--glow);
+  cursor: grab;
+}
+#joystick-topuz:active { cursor: grabbing; }
+
+#joystick-yan-kontroller {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 160px;
+}
+
+#joystick-fire {
+  padding: 8px 12px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--danger);
+  background: rgba(244, 67, 54, 0.12);
+  color: var(--danger);
+  font-weight: 600;
+  font-size: 12px;
+  letter-spacing: 0.03em;
+  cursor: pointer;
+}
+#joystick-fire:active { background: var(--danger); color: #fff; }
+
+#joystick-fire.active {
+  background-color: #ff1744;
+  box-shadow: 0 0 12px 4px rgba(255, 23, 68, 0.7);
+  transform: scale(0.96);
+  transition: all 0.05s ease;
+}
+
+#joystick-oku {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+#joystick-arm {
+  padding: 8px 12px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-light);
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--text-secondary);
+  font-weight: 600;
+  font-size: 12px;
+  letter-spacing: 0.03em;
+  cursor: pointer;
+  transition: all 0.12s ease;
+}
+
+/* ARM açıkken görmezden gelinemeyecek kadar belirgin olmalı */
+#joystick-arm.armed {
+  border-color: var(--warning);
+  background: rgba(255, 171, 0, 0.16);
+  color: var(--warning);
+  box-shadow: 0 0 10px 2px rgba(255, 171, 0, 0.35);
+}
+
+/* ARM kapalıyken ateş butonu pasif görünsün */
+#joystick-panel:not(:has(#joystick-arm.armed)) #joystick-fire {
+  opacity: 0.45;
+}
