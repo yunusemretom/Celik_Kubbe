@@ -194,34 +194,36 @@ DEFAULT_SOURCE = "dpad"
 #: kullanmali, yoksa motor dururken kol bosuna titrer.
 MOTOR_OLU_BOLGE = 0.12
 
-#: Atis servosunun calismaya baslamasi icin gereken en dusuk RT degeri.
+#: Atis motorunun calismaya baslamasi icin gereken en dusuk RT degeri.
 #: joystick_motor.ino'daki RT_ESIK ile ayni tutulmalidir. Tetik tam
 #: birakildiginda kucuk bir artik deger kalabilir; bu esik onu yok sayar.
 SERVO_RT_ESIK = 0.05
 
-#: Atis servosu bir tetik gibi calisir: her "tik"te ileri gidip geri doner.
-#: RT yalnizca SURELERI ayarlar. Bu ucu joystick_motor.ino'daki ayni isimli
-#: sabitlerle ayni tutulmalidir; titresim her tikta bir darbe verebilsin diye
-#: PC de tik frekansini ayni formulle hesaplar.
-ATIS_SURE_YAVAS_MS = 600.0
-ATIS_SURE_HIZLI_MS = 150.0
-ATIS_ARA_MS = 60.0
+#: Atis mekanizmasi BTS7960 surucu uzerinden surulen bir DC motordur ve kisa
+#: DARBELERLE calisir: her darbe bir atistir. Darbenin suresi ve gucu sabittir;
+#: RT yalnizca iki darbe arasindaki BEKLEMEYI kisaltir, yani saniyede kac atis
+#: yapildigini belirler. Bu ucu joystick_motor.ino'daki ayni isimli sabitlerle
+#: ayni tutun; titresim her darbede bir tik verebilsin diye PC de atis
+#: frekansini ayni formulle hesaplar.
+ATIS_CALISMA_MS = 200.0
+ATIS_ARA_YAVAS_MS = 1500.0
+ATIS_ARA_HIZLI_MS = 150.0
 
 
-def atis_yon_suresi_ms(rt: float) -> float:
-    """RT'den, servonun her yonde kalacagi sureyi (ms) verir."""
+def atis_ara_suresi_ms(rt: float) -> float:
+    """RT'den, iki darbe arasindaki bekleme suresini (ms) verir."""
     oran = min(max((rt - SERVO_RT_ESIK) / (1.0 - SERVO_RT_ESIK), 0.0), 1.0)
-    return ATIS_SURE_YAVAS_MS - oran * (ATIS_SURE_YAVAS_MS - ATIS_SURE_HIZLI_MS)
+    return ATIS_ARA_YAVAS_MS - oran * (ATIS_ARA_YAVAS_MS - ATIS_ARA_HIZLI_MS)
 
 
 def atis_hizi_hz(rt: float) -> float:
-    """RT degerinden saniyedeki tik sayisini hesaplar (sketch ile ayni formul).
+    """RT degerinden saniyedeki atis sayisini hesaplar (sketch ile ayni formul).
 
-    Bir tik = ileri (sure) + geri (sure) + tikler arasi kisa durus.
+    Bir atis dongusu = motorun dondugu sure + bir sonraki darbeye kadar bekleme.
     """
     if rt < SERVO_RT_ESIK:
         return 0.0
-    return 1000.0 / (2.0 * atis_yon_suresi_ms(rt) + ATIS_ARA_MS)
+    return 1000.0 / (ATIS_CALISMA_MS + atis_ara_suresi_ms(rt))
 
 
 def motor_orani(deger: float) -> float:
@@ -673,7 +675,7 @@ class HapticFeedback:
     #: titresimin arttigi hissedilmez.
     SIDDET_ADIMI = 0.04
 
-    #: Atis titresimi: servonun her tikinda bir darbe. Hafif (yuksek frekansli)
+    #: Atis titresimi: motorun her darbesinde bir tik. Hafif (yuksek frekansli)
     #: motoru kullanir; hareketin agir motorundan tamamen farkli hissedilir ve
     #: ikisi ayni anda calisabilir.
     ATIS_SIDDET = 0.9
@@ -775,10 +777,10 @@ class HapticFeedback:
             self._next_refresh = now + self.REFRESH_S
 
     def _atis_tiki(self, atis: float, gecen: float) -> float:
-        """Atis hizinda kare dalga uretir: servonun her tikinda bir darbe.
+        """Atis hizinda kare dalga uretir: motorun her darbesinde bir tik.
 
-        Faz, gercek zamanla ilerletilir; boylece titresim frekansi servonun
-        tik frekansiyla ayni olur - tetigi actikca tikler siklasir ve kac atis
+        Faz, gercek zamanla ilerletilir; boylece titresim frekansi atis
+        frekansiyla ayni olur - tetigi actikca tikler siklasir ve kac atis
         yaptigini elinden sayabilirsin.
         """
         hz = min(atis_hizi_hz(atis), self.ATIS_EN_YUKSEK_HZ)
@@ -982,8 +984,8 @@ class ArduinoLink:
         """Gonderilecek degeri gunceller. Seri yazma thread'de olur, beklemez.
 
         Uc deger gonderilir: dikey eksen (1. motor), yatay eksen (2. motor) ve
-        RT tetigi (atis servosunun hizi). Hangi eksenlerin okunacagi self.source
-        ile secilir. Kol bagli degilse hepsi 0 birakilir: motorlar durur, servo
+        RT tetigi (atis hizi). Hangi eksenlerin okunacagi self.source
+        ile secilir. Kol bagli degilse hepsi 0 birakilir: motorlar durur, atis
         bekleme konumuna doner.
         """
         if state.connected:
@@ -1146,7 +1148,7 @@ class ArduinoLink:
         """Gonderilecek baytlari uretir (iki tasima da bunu kullanir).
 
         text   : "<dikey>,<yatay>,<rt>\\n"  - joystick_motor.ino'nun bekledigi
-                 bicim; rt atis servosunun tik hizidir.
+                 bicim; rt atis darbelerinin sikligidir.
         packet : PARS UART v1.3 CMD_AIM cercevesi - esp32_firmware icindir.
                  Protokolde atis hizi alani yoktur; RT esigi gecince yalnizca
                  CTRL_ARM biti kalkar, asil ates emri ayri bir CMD_FIRE
@@ -1433,7 +1435,7 @@ def main(argv: Optional[list] = None) -> int:
     ser.add_argument(
         "--fire-safety",
         action="store_true",
-        help="Atis servosunun calismasi icin LB (emniyet) basili tutulsun; "
+        help="Atis motorunun calismasi icin LB (emniyet) basili tutulsun; "
         "boylece RT'ye yanlislikla dokunmak atis yapmaz",
     )
     ser.add_argument("--baud", type=int, default=SERIAL_BAUDRATE, help="Baud hizi (varsayilan 115200)")
@@ -1585,8 +1587,8 @@ def main(argv: Optional[list] = None) -> int:
                     f"{dikey * link.scale:+.3f},{yatay * link.scale:+.3f},{rt:.3f}"
                 )
                 lines.append(
-                    f"atis servo : RT {rt:.2f} -> "
-                    f"{'atis yok (servo notrde)' if rt < SERVO_RT_ESIK else f'saniyede {atis_hizi_hz(rt):.1f} tik'}"
+                    f"atis motor : RT {rt:.2f} -> "
+                    f"{'atis yok (motor durdu)' if rt < SERVO_RT_ESIK else f'saniyede {atis_hizi_hz(rt):.1f} darbe'}"
                     f"{emniyet}"
                 )
                 lines.append(f"seri       : {link.status()}")

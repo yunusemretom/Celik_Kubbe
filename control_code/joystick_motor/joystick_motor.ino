@@ -7,9 +7,11 @@
  *   PC:  python3 joyistik_control.py --send --port /dev/ttyACM0 --deadzone 0
  *   Kart: 115200 baud, "<dikey>,<yatay>,<rt>\n"  or. "0.420,-0.130,0.750"
  *
- * GEREKEN KUTUPHANE (ESP32 icin):
- *   Arduino IDE > Araclar > Kutuphane Yoneticisi > "ESP32Servo" (Kevin Harrington)
- *   AVR kartlarda IDE ile gelen Servo kutuphanesi kullanilir, ek kurulum yok.
+ * DONANIMSAL DURDURMA: DUR_PIN'e (GPIO 3) 3.3 V gelince tum hareket durur.
+ * Bu, PC/WiFi'dan bagimsiz calisir; yazilim kilitlense bile motorlar durur.
+ *
+ * EK KUTUPHANE GEREKMEZ. (Atis mekanizmasi artik servo degil, BTS7960 surucu
+ * uzerinden PWM ile surulen bir DC motor oldugu icin ESP32Servo kaldirildi.)
  *
  * Onceki surume gore duzeltilenler (motorlarin donmeme sebepleri):
  *   1) ENABLE pini surulmuyordu. A4988/DRV8825/TMC2208 surucularde EN aktif-LOW'dur
@@ -87,6 +89,36 @@
 #define DIR2_PIN  7
 #define EN2_PIN   9    // Kullanmiyorsan -1 yap.
 
+// ==================== ACIL DURDURMA (STOP) PINI ====================
+// Butona basilinca pine 3.3 V gelir ve TUM hareket durur: iki step motor da
+// aninda durdurulur, atis motoru kesilir. Buton birakilinca (0 V)
+// sistem kendiliginden calismaya devam eder.
+//
+// KABLOLAMA: buton pinin bir ucunu 3.3 V'a baglar. Buton basili degilken pin
+// havada kalmasin diye asagida dahili PULLDOWN aciliyor; disaridan 10k
+// pulldown direnci de koyarsan (tavsiye edilir) daha guruluye dayanikli olur.
+// Pine ASLA 5 V verme, ESP32 girisleri 3.3 V toleransli.
+//
+// NOT: GPIO3 ESP32-S3'te bir strapping pinidir (JTAG kaynak secimi). Fabrika
+// eFuse ayarlariyla (varsayilan) acilista okunmaz, bu yuzden giris olarak
+// kullanmak guvenlidir. Yine de kart acilirken butona basili tutmaktan kacin.
+#define DUR_PIN          3      // -1 yaparsan ozellik tamamen kapanir
+#define DUR_AKTIF_HIGH  true    // true: 3.3 V = DUR | false: 0 V = DUR (NC buton)
+#define DUR_DEBOUNCE_MS   20    // buton zipllamasini (bounce) filtrele
+
+// Durdurma sirasinda surucu ENABLE pinleri de kesilsin mi?
+//   false (varsayilan): bobinler enerjili kalir, motorlar konumunu TUTAR.
+//                       Dikey eksen yerçekimiyle asagi kaymaz.
+//   true              : surucu tamamen kapanir (sessiz, isinmaz) ama motor
+//                       serbest kalir; yuklu bir eksen kendi agirligiyla duser.
+#define DUR_SURUCU_KAPAT false
+
+// Teshis: pinin o anki halini duzenli olarak seri porta (ve WiFi modunda PC'ye)
+// basar. Buton calismiyorsa once bunu acip degerin butona basinca 0 -> 1
+// degistigini dogrula. Sorun cozulunce 0 yapip kapatabilirsin.
+#define DUR_DEBUG      1
+#define DUR_DEBUG_MS 500    // kac ms'de bir basilsin
+
 // ==================== AYARLAR ====================
 #define OLU_BOLGE   0.12    // bu degerin altindaki cubuk degeri = dur
 #define MIN_HIZ      150    // en yavas: adim/sn (kalkis hizi - motor bunu duruştan cekebilmeli)
@@ -104,28 +136,38 @@
 #define DIR_OTURMA_US 20    // yon degisiminden sonra ilk adima kadar beklenen sure
 #define VERI_TIMEOUT 500    // ms - veri kesilirse motorlari durdur
 
-// ==================== ATIS SERVOSU (360 / surekli donus) ====================
-// SUREKLI DONUS servosu aciya degil HIZA komut alir:
-//   1500 us      -> DUR (notr)
-//   1500'den uzaklastikca hizlanir; hangi tarafa gidildigi donus yonunu belirler
-// Bu yuzden burada aci yoktur; RT dogrudan donus hizini ayarlar.
-#define SERVO_PIN         10
-#define SERVO_DURUS_US  1500    // notr pals. Servo RT birakilinca yavasca
-                                // kayiyorsa buradan ince ayar yapin (1490/1510).
-#define SERVO_ARALIK_US  500    // notrden en fazla sapma -> tam hiz
-#define SERVO_MIN_SAPMA   40    // olu bant: bu sapmanin altinda servo donmez,
-                                // boylece cok kucuk RT degerleri bosuna zorlamaz
-#define SERVO_TERS     false    // donus yonu ters geliyorsa true yapin
-#define RT_ESIK        0.05f    // bunun altindaki RT = atis yok, servo durur
+// ==================== ATIS MOTORU (BTS7960 / IBT-2) ====================
+// Atis mekanizmasi servo degil, BTS7960 surucu karti uzerinden surulen bir DC
+// motordur. Motor tek yonde KISA DARBELERLE calisir; her darbe bir "atis"tir.
+// RT tetigi darbenin gucunu degil, saniyede kac darbe atilacagini belirler:
+// tetigi az cekersen darbeler seyrek, sonuna kadar cekersen sik gelir.
+//
+// BAGLANTI (calistigi dogrulanmis sekil):
+//   VCC   -> kartin 5V pini      (modulun mantik beslemesi)
+//   GND   -> kart GND            ORTAK GND SART, yoksa surucu tetiklenmez
+//   R_EN  -> modulun 5V'u        (jumper ile; kart pini harcamaz)
+//   L_EN  -> modulun 5V'u        (jumper ile)
+//   RPWM  -> ATIS_RPWM_PIN
+//   LPWM  -> ATIS_LPWM_PIN       BOSTA BIRAKMA - kod bu pini 0'da tutar
+//   B+/B- -> 5.5-27 V motor besleme (step motor beslemesiyle ortak olabilir)
+//   M+/M- -> motor
+//
+// NOT: ESP32 cikislari 3.3 V'tur. IBT-2 girisleri 3.3 V mantikla calisir ama
+// motor zayif kalirsa ATIS_GUC'u yukselt; yine olmazsa RPWM/LPWM'e 5 V seviye
+// cevirici gerekir.
+#define ATIS_RPWM_PIN     10    // ileri yon PWM (eski servo pini)
+#define ATIS_LPWM_PIN     11    // geri yon PWM - normalde 0'da durur
+#define ATIS_GUC         170    // 0-255 darbe gucu. 255 = tam guc
+#define ATIS_CALISMA_MS  200    // her darbede motorun dondugu sure
+#define ATIS_ARA_YAVAS_MS 1500  // RT esigi yeni gecildiginde iki darbe arasi
+#define ATIS_ARA_HIZLI_MS  150  // RT sonuna kadar cekildiginde iki darbe arasi
+#define ATIS_TERS       false   // motor ters yone donuyorsa true yap
+#define RT_ESIK         0.05f   // bunun altindaki RT = atis yok, motor durur
 
-#define SERVO_MIN_US     500    // attach() alt siniri (ESP32Servo varsayilani)
-#define SERVO_MAX_US    2500    // attach() ust siniri
-#define SERVO_PWM_HZ      50    // standart analog servo darbe frekansi
-
-//: Tam hizda yaklasik devir/dakika. Yalnizca PC'deki titresim geri bildirimi
-//: (her turda bir tik) icin kullanilir; joyistik_control.py'deki
-//: SERVO_TAM_TUR_RPM ile ayni tutulmalidir. Servonun datasheet degerini yazin.
-#define SERVO_TAM_TUR_RPM 60
+#define ATIS_PWM_HZ     1000    // BTS7960 icin 1-25 kHz arasi uygundur
+#define ATIS_PWM_BIT       8    // 8 bit cozunurluk -> 0..255 (analogWrite olcegi)
+#define ATIS_LEDC_KANAL_R  4    // yalnizca eski ESP32 cekirdeklerinde (2.x)
+#define ATIS_LEDC_KANAL_L  5
 
 // Motorlarin yonu terse calisiyorsa bunlari true yap
 #define TERS1 false
@@ -257,50 +299,107 @@ void motorDurdur(Motor &m) {
   m.aralik = 0;
 }
 
-// ==================== ATIS SERVOSU ====================
-float servoRT = 0.0f;        // PC'den gelen tetik degeri, 0..1 (0 = dur)
-int   servoUs = SERVO_DURUS_US;   // servoya en son yazilan pals (teshis icin)
+// ==================== ATIS MOTORU ====================
+float atisRT   = 0.0f;       // PC'den gelen tetik degeri, 0..1 (0 = atis yok)
+uint8_t atisPwm = 0;         // suruculere en son yazilan guc (teshis icin)
+bool atisCaliyor = false;    // su an bir darbe suruyor mu
+unsigned long atisFazBaslangic = 0;   // ms - suren fazin baslangici
+unsigned long atisAraSuresi = 0;      // ms - bir sonraki darbeye kalan bekleme
+unsigned long atisSayaci = 0;         // tamamlanan darbe (atis) sayisi
 
-// Servo kutuphanesi. ESP32'de LEDC'yi elle surmek yerine ESP32Servo kullaniyoruz:
-// kutuphane zamanlayici/kanal tahsisini kendi yapiyor ve donanimda calistigi
-// dogrulandi. Arduino IDE > Kutuphane Yoneticisi > "ESP32Servo" ile kurulur.
+// PWM cikisi. ESP32'de analogWrite cekirdek surumune gore degistigi icin
+// dogrudan LEDC kullaniyoruz; AVR kartlarda analogWrite zaten yeterli.
+void atisPwmBaslat() {
 #if defined(ARDUINO_ARCH_ESP32)
-  #include <ESP32Servo.h>
+  #if defined(ESP_ARDUINO_VERSION_MAJOR) && ESP_ARDUINO_VERSION_MAJOR >= 3
+    ledcAttach(ATIS_RPWM_PIN, ATIS_PWM_HZ, ATIS_PWM_BIT);
+    ledcAttach(ATIS_LPWM_PIN, ATIS_PWM_HZ, ATIS_PWM_BIT);
+  #else
+    ledcSetup(ATIS_LEDC_KANAL_R, ATIS_PWM_HZ, ATIS_PWM_BIT);
+    ledcAttachPin(ATIS_RPWM_PIN, ATIS_LEDC_KANAL_R);
+    ledcSetup(ATIS_LEDC_KANAL_L, ATIS_PWM_HZ, ATIS_PWM_BIT);
+    ledcAttachPin(ATIS_LPWM_PIN, ATIS_LEDC_KANAL_L);
+  #endif
 #else
-  #include <Servo.h>
+  pinMode(ATIS_RPWM_PIN, OUTPUT);
+  pinMode(ATIS_LPWM_PIN, OUTPUT);
 #endif
-
-Servo atisServo;
-
-void servoDonanimaYaz(int us) {
-  servoUs = us;
-  atisServo.writeMicroseconds(us);
 }
 
-void servoBaslat() {
+// Tek yonde guc verir. BTS7960'ta bir yon PWM alirken diger yon MUTLAKA 0
+// olmali; ikisi birden surulurse kopru kisa devre olur ve surucu isinir.
+void atisGucYaz(uint8_t guc) {
+  atisPwm = guc;
+  uint8_t r = ATIS_TERS ? 0 : guc;
+  uint8_t l = ATIS_TERS ? guc : 0;
+
 #if defined(ARDUINO_ARCH_ESP32)
-  atisServo.setPeriodHertz(SERVO_PWM_HZ);   // standart analog servo: 50 Hz
+  #if defined(ESP_ARDUINO_VERSION_MAJOR) && ESP_ARDUINO_VERSION_MAJOR >= 3
+    ledcWrite(ATIS_RPWM_PIN, r);
+    ledcWrite(ATIS_LPWM_PIN, l);
+  #else
+    ledcWrite(ATIS_LEDC_KANAL_R, r);
+    ledcWrite(ATIS_LEDC_KANAL_L, l);
+  #endif
+#else
+  analogWrite(ATIS_RPWM_PIN, r);
+  analogWrite(ATIS_LPWM_PIN, l);
 #endif
-  atisServo.attach(SERVO_PIN, SERVO_MIN_US, SERVO_MAX_US);
-  // Attach'tan hemen sonra notr yaz: aksi halde servo acilista donmeye baslar.
-  servoDonanimaYaz(SERVO_DURUS_US);
 }
 
-// RT'yi dogrudan donus hizina cevirir. Surekli donus servosunda "konum" yoktur,
-// bu yuzden dt'ye veya rampaya gerek kalmaz: pals ne ise servo o hizda doner.
-void servoGuncelle() {
-  if (servoRT < RT_ESIK) {
-    servoDonanimaYaz(SERVO_DURUS_US);       // DUR
+void atisBaslat() {
+  atisPwmBaslat();
+  atisGucYaz(0);             // guvenli baslangic: motor durur
+}
+
+// Motoru aninda keser. Suren darbe varsa yarida biter - yalnizca acil
+// durdurmada kullanilir.
+void atisDurdur() {
+  atisRT = 0.0f;
+  atisCaliyor = false;
+  atisAraSuresi = 0;
+  atisGucYaz(0);
+}
+
+// RT'den iki darbe arasindaki bekleme suresini (ms) hesaplar.
+// Tetik ne kadar cok cekilirse bekleme o kadar kisalir, yani atis siklasir.
+unsigned long atisAralikHesapla() {
+  float oran = (atisRT - RT_ESIK) / (1.0f - RT_ESIK);
+  if (oran < 0.0f) oran = 0.0f;
+  if (oran > 1.0f) oran = 1.0f;
+  return (unsigned long)(ATIS_ARA_YAVAS_MS -
+                         oran * (ATIS_ARA_YAVAS_MS - ATIS_ARA_HIZLI_MS));
+}
+
+// Calis/dur dongusunu delay() olmadan yurutur; step motorlarin adim zamanlamasi
+// bozulmasin diye hicbir yerde beklenmez.
+void atisGuncelle() {
+  unsigned long simdi = millis();
+
+  if (atisCaliyor) {
+    // Baslayan darbe, tetik birakilsa bile tamamlanir: mekanizma yarim
+    // konumda kalmasin.
+    if (simdi - atisFazBaslangic >= ATIS_CALISMA_MS) {
+      atisGucYaz(0);
+      atisCaliyor = false;
+      atisFazBaslangic = simdi;
+      atisAraSuresi = atisAralikHesapla();
+      atisSayaci++;
+    }
     return;
   }
 
-  // RT_ESIK..1 araligini 0..1'e yay, sonra olu bandin ustunden tam hiza kadar
-  // olan sapmaya cevir.
-  float oran = (servoRT - RT_ESIK) / (1.0f - RT_ESIK);
-  if (oran > 1.0f) oran = 1.0f;
-  int sapma = (int)(SERVO_MIN_SAPMA + oran * (SERVO_ARALIK_US - SERVO_MIN_SAPMA));
+  atisGucYaz(0);
 
-  servoDonanimaYaz(SERVO_TERS ? SERVO_DURUS_US - sapma : SERVO_DURUS_US + sapma);
+  if (atisRT < RT_ESIK) {
+    atisAraSuresi = 0;       // tetik birakildi: tekrar cekilince hemen atsin
+    return;
+  }
+  if (simdi - atisFazBaslangic < atisAraSuresi) return;
+
+  atisCaliyor = true;
+  atisFazBaslangic = simdi;
+  atisGucYaz(ATIS_GUC);
 }
 
 // ==================== WIFI / UDP ====================
@@ -382,10 +481,81 @@ void udpYaz(const char *mesaj) {
 }
 #endif  // BAGLANTI_MODU
 
+// ==================== ACIL DURDURMA ====================
+bool durAktif = false;       // debounce'lanmis gecerli durum (true = DURDURULDU)
+bool durHam   = false;       // pinden okunan ham (filtresiz) durum
+unsigned long durHamZaman = 0;
+
+// Butun kanallara ayni satiri bas (USB + varsa WiFi).
+void durHaberVer(const char *mesaj) {
+  SERI.println(mesaj);
+#if BAGLANTI_MODU
+  udpYaz(mesaj);
+#endif
+}
+
+// ENABLE aktif-LOW: ac=true -> LOW (surucu calisir), ac=false -> HIGH (serbest).
+void surucuEnable(bool ac) {
+  if (EN1_PIN >= 0) digitalWrite(EN1_PIN, ac ? LOW : HIGH);
+  if (EN2_PIN >= 0) digitalWrite(EN2_PIN, ac ? LOW : HIGH);
+}
+
+// Butonu okur, zipllamasini (bounce) filtreler, durum degisince tepki verir.
+// Her donguden cagrilir, bloklamaz.
+void durPiniGuncelle() {
+#if DUR_PIN >= 0
+  unsigned long simdi = millis();
+
+  int  ham    = digitalRead(DUR_PIN);          // pinin fiziksel hali (0/1)
+  bool okunan = (ham == HIGH);
+  if (!DUR_AKTIF_HIGH) okunan = !okunan;
+
+#if DUR_DEBUG
+  // Pinin ham degerini duzenli bas. Butona basinca burada 0 -> 1 gormuyorsan
+  // sorun yazilimda degil kablolamadadir (asagidaki notlara bak).
+  static unsigned long sonDurBasim = 0;
+  if (simdi - sonDurBasim >= DUR_DEBUG_MS) {
+    sonDurBasim = simdi;
+    char satir[80];
+    snprintf(satir, sizeof(satir), "stop pini GPIO%d = %d (%s) | durum: %s",
+             DUR_PIN, ham, ham ? "3.3V var" : "0V",
+             durAktif ? "DURDURULDU" : "serbest");
+    durHaberVer(satir);
+  }
+#endif
+
+  // Sinyal her degistiginde sayaci sifirla; DUR_DEBOUNCE_MS boyunca sabit
+  // kalirsa gercek durum olarak kabul et.
+  if (okunan != durHam) {
+    durHam = okunan;
+    durHamZaman = simdi;
+    return;
+  }
+  if (okunan == durAktif) return;                  // zaten bu durumdayiz
+  if (simdi - durHamZaman < DUR_DEBOUNCE_MS) return;
+
+  durAktif = okunan;
+
+  if (durAktif) {
+    // Rampayi beklemeden hizi sifirla: fren mesafesi bile birakma.
+    motorDurdur(m1);
+    motorDurdur(m2);
+    atisDurdur();                                  // atis motorunu aninda kes
+#if DUR_SURUCU_KAPAT
+    surucuEnable(false);
+#endif
+    durHaberVer("DURDURMA AKTIF (stop pini)");
+  } else {
+    surucuEnable(true);
+    durHaberVer("DURDURMA KALKTI - kontrol geri verildi");
+  }
+#endif
+}
+
 // ==================== SERI ====================
 // "0.42,-0.87\n" formatindaki satiri ayristirir.
 // Beklenen bicim: "<dikey>,<yatay>,<rt>\n"  or. "0.000,1.000,0.750"
-// Ucuncu alan yoksa (eski surum PC yazilimi) rt = 0 kabul edilir: servo durur.
+// Ucuncu alan yoksa (eski surum PC yazilimi) rt = 0 kabul edilir: atis olmaz.
 void satirIsle(char *s) {
   char *virgul = strchr(s, ',');
   if (!virgul) return;
@@ -407,7 +577,7 @@ void satirIsle(char *s) {
 
   hedefAyarla(m1, eksen1);
   hedefAyarla(m2, eksen2);
-  servoRT = rt;
+  atisRT = rt;
   sonVeri = millis();
 
 #if DEBUG_SERI
@@ -415,8 +585,8 @@ void satirIsle(char *s) {
   if (millis() - sonBasim > 200) {     // ~5 Hz; hatti bogmamak icin
     sonBasim = millis();
     char satir[80];
-    snprintf(satir, sizeof(satir), "rx %.3f,%.3f,%.2f hiz %d,%d servo %d us",
-             eksen1, eksen2, rt, (int)m1.hiz, (int)m2.hiz, servoUs);
+    snprintf(satir, sizeof(satir), "rx %.3f,%.3f,%.2f hiz %d,%d atis pwm %d",
+             eksen1, eksen2, rt, (int)m1.hiz, (int)m2.hiz, atisPwm);
     SERI.println(satir);
 #if BAGLANTI_MODU
     udpYaz(satir);          // WiFi ile baglaniyorsa teshis PC'ye geri doner
@@ -469,8 +639,31 @@ void setup() {
   if (EN1_PIN >= 0) { pinMode(EN1_PIN, OUTPUT); digitalWrite(EN1_PIN, LOW); }
   if (EN2_PIN >= 0) { pinMode(EN2_PIN, OUTPUT); digitalWrite(EN2_PIN, LOW); }
 
-  // Atis servosu: notr palsle baslar, yani komut gelene kadar DURUR.
-  servoBaslat();
+  // Durdurma butonu. Dahili pulldown, buton basili degilken pinin havada
+  // kalip gurultuyle rastgele tetiklenmesini onler.
+#if DUR_PIN >= 0
+  #if defined(ARDUINO_ARCH_ESP32)
+    pinMode(DUR_PIN, DUR_AKTIF_HIGH ? INPUT_PULLDOWN : INPUT_PULLUP);
+  #else
+    pinMode(DUR_PIN, DUR_AKTIF_HIGH ? INPUT : INPUT_PULLUP);
+  #endif
+  // Acilista butona basili ise sistem DURDURULMUS baslasin.
+  durHam = (digitalRead(DUR_PIN) == HIGH);
+  if (!DUR_AKTIF_HIGH) durHam = !durHam;
+  durAktif = durHam;
+  durHamZaman = millis();
+  SERI.print("stop pini   : GPIO "); SERI.print(DUR_PIN);
+  SERI.print(" acilis degeri = "); SERI.println(digitalRead(DUR_PIN));
+  if (durAktif) {
+  #if DUR_SURUCU_KAPAT
+    surucuEnable(false);
+  #endif
+    SERI.println("DIKKAT: stop pini acilista aktif - motorlar kilitli");
+  }
+#endif
+
+  // Atis motoru: PWM 0 ile baslar, yani komut gelene kadar DURUR.
+  atisBaslat();
 
   sonVeri = millis();
   sonRampa = micros();
@@ -489,6 +682,9 @@ void setup() {
 }
 
 void loop() {
+  // Durdurma butonu her seyden once okunur.
+  durPiniGuncelle();
+
 #if TEST_MODU == 1
   // --- Kablolama testi: seri hat ve joystick olmadan calisir ---
   // Iki motor da 2 sn ileri, 2 sn geri doner. Donmuyorsa sorun PC'de degil;
@@ -506,6 +702,8 @@ void loop() {
   // hizda titremeye baslayip donmeyi birakiyorsa (senkron kaybi), MAX_HIZ'i
   // o degerin ~%70'i yapin. Rampa devre disi: hedef dogrudan uygulanir.
   {
+    if (durAktif) { motorDurdur(m1); motorDurdur(m2); return; }
+
     unsigned long t = millis() % TARAMA_SURE_MS;
     float oran = (float)t / TARAMA_SURE_MS;
     float hiz = TARAMA_BASLANGIC + oran * (TARAMA_BITIS - TARAMA_BASLANGIC);
@@ -557,12 +755,21 @@ void loop() {
 #endif
 
   // --- Guvenlik: veri kesilirse durdur ---
-  // Servo da durur ve bekleme konumuna doner: kablo/WiFi kopunca atis
-  // mekanizmasi kendi basina calismaya devam etmemeli.
+  // Atis da durur: kablo/WiFi kopunca atis mekanizmasi kendi basina calismaya
+  // devam etmemeli. Suren darbe varsa tamamlanir, yenisi baslamaz.
   if (millis() - sonVeri > VERI_TIMEOUT) {
     motorDurdur(m1);
     motorDurdur(m2);
-    servoRT = 0.0f;
+    atisRT = 0.0f;
+  }
+
+  // --- Guvenlik: stop pini basiliyken hicbir komut uygulanmaz ---
+  // Gelen veri yukarida okunmaya DEVAM eder (okunmazsa USB/UDP tamponu dolar
+  // ve PC tarafi "Write timeout" verir), sadece motora yansitilmaz.
+  if (durAktif) {
+    motorDurdur(m1);
+    motorDurdur(m2);
+    atisRT = 0.0f;
   }
 
   // --- Rampa: sabit 1 kHz'de guncelle (her dongude float hesabi yavaslatir) ---
@@ -573,7 +780,7 @@ void loop() {
     if (dt > 0.05) dt = 0.05;         // takilma/tasma sonrasi sicramayi engelle
     rampaGuncelle(m1, dt);
     rampaGuncelle(m2, dt);
-    servoGuncelle();                  // atis servosu da ayni saatte guncellenir
+    atisGuncelle();                   // atis motoru da ayni saatte guncellenir
   }
 
   // --- Motorlari sur ---

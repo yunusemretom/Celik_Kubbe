@@ -30,7 +30,7 @@ Kullanim:
 
 Tuslar:
     Y      : MANUEL <-> OTONOM
-    RT     : atis servosu (her iki modda da calisir)
+    RT     : atis motoru (her iki modda da calisir)
     B      : E-Stop  (otonom mod kapanir, eksenler durur)
     q / ESC: cikis
 """
