@@ -1,4 +1,5 @@
 #include "joystick.h"
+#include "uart_protocol.h" 
 
 #if JOYSTICK_WIFI_MODE
   #include <WiFi.h>

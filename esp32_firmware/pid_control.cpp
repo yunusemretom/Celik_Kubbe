@@ -143,7 +143,7 @@ void pid_zeroPositionEstimate() {
     azState.currentAngleDeg     = 0.0f;
     elevState.currentAngleDeg   = 0.0f;
     LOG_INFO("Pozisyon tahmini sifirlandi (0/0)");
-
+}
 
 void pid_setTargetAngles(float azimuthDeg, float elevationDeg) {
     // Hiz modunda joystick tek efendidir; CMD_AIM burada yok sayilir.

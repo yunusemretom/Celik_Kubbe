@@ -121,7 +121,7 @@ void safety_update() {
         homingInProgress = false;
         pid_resetVelocityLimitDegS();
         currentState = ST_STANDBY;
-        SLOG_INFO("CMD_HOME tamamlandi");
+        LOG_INFO("CMD_HOME tamamlandi");
     }
 }
 
