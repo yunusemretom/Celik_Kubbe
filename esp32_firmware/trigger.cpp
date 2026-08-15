@@ -1,4 +1,5 @@
 #include "trigger.h"
+#include "uart_protocol.h"
 
 // GEREKEN KUTUPHANE: Arduino IDE > Kutuphane Yoneticisi > "ESP32Servo"
 // (Kevin Harrington). Eski joystick_motor.ino da bunu kullaniyordu.
@@ -37,14 +38,8 @@ void trigger_init() {
     stateStartMillis = millis();
     pullCount = 0;
 
-    Serial.print("[TETIK] Servo hazir (pin ");
-    Serial.print(TRIGGER_SERVO_PIN);
-    Serial.print(", bos=");
-    Serial.print(TRIGGER_REST_DEG);
-    Serial.print(char(176));
-    Serial.print(", cekili=");
-    Serial.print(TRIGGER_PULL_DEG);
-    Serial.println(char(176));
+    LOG_INFO("TETIK hazir pin=%d bos=%d cekili=%d",
+              TRIGGER_SERVO_PIN, TRIGGER_REST_DEG, TRIGGER_PULL_DEG);
 }
 
 

@@ -1,14 +1,11 @@
 #include "uart_protocol.h"
 #include "config.h"
 #include <string.h>
+#include <stdarg.h>
 
-HardwareSerial rpiSerial(1);
+#define rpiSerial Serial
 
-// ====================================================================
-// CRC-16/CCITT-FALSE
-// poly 0x1021, init 0xFFFF, giris/cikis yansitma yok, final XOR 0.
-// Test: crc16_ccitt_false({0x00,0x00}) == 0x1D0F 
-// ====================================================================
+
 uint16_t crc16_ccitt_false(const uint8_t *data, size_t length) {
     uint16_t crc = UART_CRC_INIT;
     for (size_t i = 0; i < length; i++) {
@@ -215,7 +212,7 @@ static void feedByte(uint8_t c) {
 }
 
 void uartProtocolInit() {
-    rpiSerial.begin(RPI_UART_BAUD, SERIAL_8N1, RPI_UART_RX_PIN, RPI_UART_TX_PIN);
+   rpiSerial.begin(RPI_UART_BAUD);
  
     parserState = WAIT_A;
     frameRawLen = 0;
@@ -257,6 +254,22 @@ static void sendFrame(uint8_t msgId, const uint8_t *payload, uint8_t len) {
     rpiSerial.write(body, (size_t)len + 2);
     rpiSerial.write((uint8_t)(crc & 0xFF));        // CRC little-endian
     rpiSerial.write((uint8_t)((crc >> 8) & 0xFF));
+}
+
+void sendLog(uint8_t level, const char *fmt, ...) {
+    char msg[UART_MAX_PAYLOAD - 1];   // 31 bayt metin (level 1 bayt + bu = 32 = UART_MAX_PAYLOAD)
+
+    va_list args;
+    va_start(args, fmt);
+    vsnprintf(msg, sizeof(msg), fmt, args);
+    va_end(args);
+
+    uint8_t textLen = (uint8_t)strnlen(msg, sizeof(msg) - 1);
+
+    uint8_t p[UART_MAX_PAYLOAD];
+    p[0] = level;
+    memcpy(&p[1], msg, textLen);
+    sendFrame(LOG_MSG, p, (uint8_t)(textLen + 1));
 }
 
 void sendTlmState(uint8_t protoState, float azimuthDeg, float elevationDeg,

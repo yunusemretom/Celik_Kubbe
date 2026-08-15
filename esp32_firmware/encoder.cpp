@@ -1,5 +1,5 @@
 #include "encoder.h"
-
+#include "uart_protocol.h"
 
 #define AS5600_REG_RAW_ANGLE_H   0x0C
 #define AS5600_REG_RAW_ANGLE_L   0x0D
@@ -61,14 +61,10 @@ bool encoder_init() {
     bool elevFound = readRawAngle12(Wire1, ELEV_ENCODER_I2C_ADDR, rawTest);
 
     if (!azFound) {
-        Serial.print("[HATA] Azimut encoder (Wire, adr 0x");
-        Serial.print(AZ_ENCODER_I2C_ADDR, HEX);
-        Serial.println(") I2C hattinda yanit vermedi! Kablo/adres/pin kontrol edin.");
+       LOG_ERR("AZ encoder yanit yok adr=0x%02X", AZ_ENCODER_I2C_ADDR);
     }
     if (!elevFound) {
-        Serial.print("[HATA] Elevasyon encoder (Wire1, adr 0x");
-        Serial.print(ELEV_ENCODER_I2C_ADDR, HEX);
-        Serial.println(") I2C hattinda yanit vermedi! Kablo/adres/pin kontrol edin.");
+       LOG_ERR("ELEV encoder yanit yok adr=0x%02X", ELEV_ENCODER_I2C_ADDR);
     }
 
     azOk = azFound;
@@ -123,16 +119,16 @@ void encoder_calibrateZero() {
 
     if (readRawAngle12(Wire, AZ_ENCODER_I2C_ADDR, azRaw)) {
         azZeroOffsetDeg = (azRaw * 360.0f) / (float)ENCODER_MAX_VALUE;
-        Serial.println("[BILGI] Azimut encoder sifir noktasi kalibre edildi.");
+        LOG_INFO("AZ encoder kalibre edildi");
     } else {
-        Serial.println("[HATA] Azimut encoder kalibrasyonu basarisiz (I2C yanit yok)!");
+        LOG_ERR("AZ encoder kalibrasyon basarisiz");
     }
 
     if (readRawAngle12(Wire1, ELEV_ENCODER_I2C_ADDR, elevRaw)) {
         elevZeroOffsetDeg = (elevRaw * 360.0f) / (float)ENCODER_MAX_VALUE;
-        Serial.println("[BILGI] Elevasyon encoder sifir noktasi kalibre edildi.");
+        LOG_INFO("ELEV encoder kalibre edildi");
     } else {
-        Serial.println("[HATA] Elevasyon encoder kalibrasyonu basarisiz (I2C yanit yok)!");
+        LOG_ERR("ELEV encoder kalibrasyon basarisiz");
     }
 }
 

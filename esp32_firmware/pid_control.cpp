@@ -118,9 +118,7 @@ void pid_setControlMode(PidControlMode mode) {
     }
 
     controlMode = mode;
-    Serial.print("[PID] Kontrol modu: ");
-    Serial.println(mode == PID_MODE_VELOCITY ? "HIZ (acik cevrim, joystick)"
-                                             : "POZISYON (PID, encoder)");
+    LOG_INFO("Mod: %s", mode == PID_MODE_VELOCITY ? "HIZ" : "POZISYON");
 }
 
 PidControlMode pid_getControlMode() {
@@ -144,8 +142,7 @@ void pid_zeroPositionEstimate() {
     elevState.estimatedAngleDeg = 0.0f;
     azState.currentAngleDeg     = 0.0f;
     elevState.currentAngleDeg   = 0.0f;
-    Serial.println("[PID] Pozisyon tahmini sifirlandi (taret 0/0 kabul edildi).");
-}
+    LOG_INFO("Pozisyon tahmini sifirlandi (0/0)");
 
 
 void pid_setTargetAngles(float azimuthDeg, float elevationDeg) {

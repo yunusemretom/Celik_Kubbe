@@ -4,8 +4,8 @@
 #include <Arduino.h>
 
 //pinler uyumlu 
-//#define AZ_ENCODER_I2C_ADDR    0x36   // AS5600, Wire (hat 1) - yaty eksen
-//#define ELEV_ENCODER_I2C_ADDR  0x36   // AS5600, Wire1 (hat 2) - dikey açı
+#define AZ_ENCODER_I2C_ADDR    0x36   // AS5600, Wire (hat 1) - yaty eksen
+#define ELEV_ENCODER_I2C_ADDR  0x36   // AS5600, Wire1 (hat 2) - dikey açı
 #define AZ_STEP_PIN      6
 #define AZ_DIR_PIN       7
 #define AZ_EN_PIN        9
@@ -19,7 +19,7 @@
 #define ELEV_I2C_SDA_PIN   41
 #define ELEV_I2C_SCL_PIN   42
 
-// ==================== UART - RPi HABERLEŞME PINLERI ====================
+//USB Bağlantısı var kullanılmayacak
 #define RPI_UART_RX_PIN     16
 #define RPI_UART_TX_PIN     17
 #define RPI_UART_BAUD       115200  //saniyede gönderilen bit veri

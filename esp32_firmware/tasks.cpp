@@ -206,7 +206,7 @@ static void taskCommRpi(void *pvParameters) {
             trigger_forceRelease();
             commLostFreezeActive = true;
             sendErr(ERR_UART_TIMEOUT, (uint16_t)silenceMs);
-            Serial.println("[COMM] RPi'den veri kesildi (timeout)! Motor guvenlik icin donduruldu.");
+            LOG_WARN("RPi timeout, motor durduruldu");
         }
 
         // ---------------- BAGLANTI GERI GELDI ----------------
@@ -214,7 +214,7 @@ static void taskCommRpi(void *pvParameters) {
             commLostFreezeActive = false;
             if (!safety_isEstopActive() && !safety_isAmmoDepleted()) {
                 pid_resumeAfterEstop();
-                Serial.println("[COMM] RPi baglantisi geri geldi, motor serbest birakildi.");
+                LOG_INFO("RPi baglantisi geri geldi");
             }
         }
 
@@ -370,7 +370,7 @@ static void taskJoystick(void *pvParameters) {
 
             if (!timeoutReported) {
                 timeoutReported = true;
-                Serial.println("[JOYSTICK] Veri kesildi - eksenler durduruldu, tetik birakildi.");
+                LOG_WARN("Joystick timeout, eksenler durduruldu");
             }
             vTaskDelayUntil(&sonUyanma, periyot);
             continue;
@@ -423,5 +423,5 @@ void tasks_startAll() {
     xTaskCreatePinnedToCore(taskLidar,        "Lidar",     TASK_STACK_LIDAR,    NULL, TASK_PRIORITY_LIDAR,    NULL, 0);
     xTaskCreatePinnedToCore(taskJoystick,     "Joystick",  TASK_STACK_JOYSTICK, NULL, TASK_PRIORITY_JOYSTICK, NULL, 0);
 
-    Serial.println("[TASKS] Gorevler basladi (CommRPi/Lidar/Joystick:core0, MotorCtrl:core1).");
+    LOG_INFO("Gorevler basladi");
 }

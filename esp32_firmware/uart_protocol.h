@@ -3,11 +3,15 @@
 
 #include <Arduino.h>
 
-// ====================================================================
-// PARS - SBC (RPi) <-> MCU (ESP32) UART Haberlesme Protokolu
-// Surum: 1.3  (bkz. PARS_UART_Haberlesme_Protokolu_v1_3.pdf)
-// Bu dosya PDF'teki Ek A sabitleriyle bire bir eslesir.
-// ====================================================================
+//USB Binary üzerinden yeni log mesaj tipiyle debug log gönderimi
+// ESP32 -> RPi (0x80 biti set)
+
+#define LOG_MSG         0x84   // ESP32 -> RPi, LEN degisken (1: seviye + max 31 bayt metin)
+
+// ---------------- LOG_MSG seviyeleri ----------------
+#define LOG_LEVEL_INFO   0
+#define LOG_LEVEL_WARN   1
+#define LOG_LEVEL_ERROR  2
 
 // ---------------- CERCEVE SABITLERI ----------------
 #define UART_PREAMBLE_1     0xAA
@@ -161,7 +165,13 @@ void onCmdPid(const CmdPidPayload &p);
 unsigned long uartProtocolMsSinceLastValidPacket();
 
 // ---------------- GONDERME FONKSIYONLARI (ESP32 -> RPi) ----------------
+// printf-tarzi debug log; RPi'ye LOG_MSG cercevesi olarak gider, RPi bunu YKI'ye iletir.
+// UART_MAX_PAYLOAD=32 sinirindan dolayi metin 31 karakterle KIRPILIR - kisa tut.
+void sendLog(uint8_t level, const char *fmt, ...);
 
+#define LOG_INFO(...)  sendLog(LOG_LEVEL_INFO, __VA_ARGS__)
+#define LOG_WARN(...)  sendLog(LOG_LEVEL_WARN, __VA_ARGS__)
+#define LOG_ERR(...)   sendLog(LOG_LEVEL_ERROR, __VA_ARGS__)
 void sendTlmState(uint8_t protoState, float azimuthDeg, float elevationDeg,
                    uint16_t lidarRangeMm, uint8_t ammo, uint8_t flags,
                    uint8_t lostPkts);

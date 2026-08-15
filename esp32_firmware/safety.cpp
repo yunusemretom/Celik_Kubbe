@@ -69,7 +69,7 @@ void safety_init() {
         trigger_forceRelease();
         currentState = ST_EMERGENCY_SHUTDOWN;
         sendErr(ERR_ESTOP, 0);
-        Serial.println("[GUVENLIK] Baslangicta E-Stop basili tespit edildi! Once serbest birakin.");
+        LOG_WARN("Baslangicta E-Stop basili");
     }
 }
 
@@ -97,7 +97,7 @@ void safety_update() {
                 currentState = ST_EMERGENCY_SHUTDOWN;
                 sendErr(ERR_ESTOP, 0);
                 cancelHomingIfActive();
-                Serial.println("[GUVENLIK] Fiziksel E-Stop tetiklendi! Sistem kilitlendi.");
+                LOG_WARN("Fiziksel E-Stop tetiklendi");
             }
             // fiziksel buton serbest kalmasi KENDI BASINA sistemi calisir hale getirmez.
         }
@@ -113,7 +113,7 @@ void safety_update() {
         trigger_forceRelease();
         sendErr(ERR_AMMO_DEPLETED, 0);
         cancelHomingIfActive();
-        Serial.println("[GUVENLIK] Muhimmat bitti! ST_SAFE_STOP.");
+        LOG_WARN("Muhimmat bitti");
     }
 
     // ---------------- HOMING TAMAMLANMA KONTROLU ----------------
@@ -121,7 +121,7 @@ void safety_update() {
         homingInProgress = false;
         pid_resetVelocityLimitDegS();
         currentState = ST_STANDBY;
-        Serial.println("[GUVENLIK] CMD_HOME tamamlandi, sistem STANDBY.");
+        SLOG_INFO("CMD_HOME tamamlandi");
     }
 }
 
@@ -133,8 +133,7 @@ void safety_onCmdSafe(uint8_t reason) {
     trigger_forceRelease();
     currentState = ST_SAFE_STOP;
     cancelHomingIfActive();
-    Serial.print("[GUVENLIK] RPi'den CMD_SAFE alindi, sebep kodu: ");
-    Serial.println(reason);
+    LOG_WARN("CMD_SAFE alindi, sebep=%d", reason);
 }
 
 bool safety_tryClearSoftwareSafeStop() {
@@ -146,7 +145,7 @@ bool safety_tryClearSoftwareSafeStop() {
     estopSoftwareActive = false;
     pid_resumeAfterEstop();
     currentState = ST_STANDBY;
-    Serial.println("[GUVENLIK] Yazilimsal SAFE_STOP temizlendi, sistem STANDBY.");
+    LOG_INFO("SAFE_STOP temizlendi");
     return true;
 }
 
@@ -231,7 +230,7 @@ void safety_resetAmmoCount(uint16_t newCount) {
     if (newCount > 0 && currentState == ST_SAFE_STOP && !estopSoftwareActive) {
         pid_resumeAfterEstop();
         currentState = ST_STANDBY;
-        Serial.println("[GUVENLIK] Muhimmat yenilendi, sistem STANDBY moduna donuyor.");
+        LOG_INFO("Muhimmat yenilendi");
     }
 }
 
