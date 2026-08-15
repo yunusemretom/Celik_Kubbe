@@ -2,8 +2,9 @@
 
 ESP32-S3 tabanlı, iki eksenli (azimut/elevasyon) bir taretin hareket, tetikleme,
 menzil ölçüm ve haberleşme kontrolünü yürüten FreeRTOS gömülü yazılımı. Sistem
-bir Raspberry Pi (SBC) ile UART üzerinden konuşur, ayrıca YKI web arayüzünden
-gelen bir joystick sinyalini de doğrudan WiFi/UDP üzerinden kabul edebilir.
+bir Raspberry Pi (SBC) ile **USB üzerinden** (kartın native programlama portu)
+konuşur, ayrıca YKI web arayüzünden gelen bir joystick sinyalini de doğrudan
+WiFi/UDP üzerinden kabul edebilir.
 
 ## İçindekiler
 
@@ -13,7 +14,8 @@ gelen bir joystick sinyalini de doğrudan WiFi/UDP üzerinden kabul edebilir.
 - [Görevler (FreeRTOS Tasks)](#görevler-freertos-tasks)
 - [Kontrol Modları](#kontrol-modları)
 - [Güvenlik Katmanı](#güvenlik-katmanı)
-- [UART Protokolü (RPi ↔ ESP32)](#uart-protokolü-rpi--esp32)
+- [UART Protokolü (RPi ↔ ESP32, USB üzerinden)](#uart-protokolü-rpi--esp32-usb-üzerinden)
+- [Debug Log Akışı (LOG_MSG → RPi → YKI)](#debug-log-akışı-log_msg--rpi--yki)
 - [Joystick (WiFi/UDP) Girişi](#joystick-wifiudp-girişi)
 - [LiDAR](#lidar)
 - [Encoder (AS5600)](#encoder-as5600)
@@ -27,10 +29,10 @@ Firmware dört FreeRTOS görevine bölünmüştür ve iki çekirdeğe pinlenmiş
 
 | Görev | Çekirdek | Öncelik | Görev |
 |---|---|---|---|
-| `CommRPi` | 0 | 2 | RPi UART protokolünü işler, telemetri gönderir, bağlantı kopma failsafe'ini izler |
+| `CommRPi` | 0 | 2 | RPi USB/UART protokolünü işler, telemetri + log gönderir, bağlantı kopma failsafe'ini izler |
 | `MotorCtrl` | 1 | 2 | `safety_update()` + `pid_update()` — eksen kontrolü ve güvenlik durum makinesi |
 | `Lidar` | 0 | 1 | TF03-180 LiDAR'dan mesafe okur |
-| `Joystick` | 0 | 2 | YKI arayüzünden UDP/seri joystick paketlerini işler, manuel modda eksenleri ve tetiği sürer |
+| `Joystick` | 0 | 2 | YKI arayüzünden UDP joystick paketlerini işler, manuel modda eksenleri ve tetiği sürer |
 
 İki "efendi" (RPi ve joystick) aynı anda motoru sürmesin diye kontrol tek bir
 moda bağlıdır: `PROTO_MODE_MANUAL` iken joystick söz sahibidir ve RPi'den gelen
@@ -41,14 +43,14 @@ moda bağlıdır: `PROTO_MODE_MANUAL` iken joystick söz sahibidir ve RPi'den ge
 ```
 esp32_firmware.ino     setup()/loop() giriş noktası
 config.h                Tüm pinler, sabitler, sistem modu/durumu enumları
-uart_protocol.h/.cpp    RPi <-> ESP32 çerçeve protokolü (CRC-16/CCITT-FALSE)
+uart_protocol.h/.cpp    RPi <-> ESP32 çerçeve protokolü (CRC-16/CCITT-FALSE) + debug log
 tasks.h/.cpp            FreeRTOS görevleri + protokol callback'lerinin bağlanması
 pid_control.h/.cpp      Azimut/elevasyon eksen kontrolü (pozisyon PID + açık çevrim hız modu)
 encoder.h/.cpp          AS5600 manyetik encoder okuma (I2C, Wire/Wire1)
 safety.h/.cpp           Tek yetkili güvenlik katmanı: E-Stop, mühimmat, yasak bölge, menzil kapısı
 trigger.h/.cpp          İp/servo ile tüfek tetiği aktüatörü
 lidar.h/.cpp            TF03-180 LiDAR UART çerçeve ayrıştırıcı
-joystick.h/.cpp         WiFi/UDP + USB seri joystick girişi (YKI arayüzü)
+joystick.h/.cpp         WiFi/UDP joystick girişi (YKI arayüzü)
 ```
 
 ## Donanım / Pin Haritası
@@ -67,11 +69,16 @@ Tüm pin tanımları `config.h` içinde toplanmıştır.
 | Azimut (`Wire`) | 1 | 2 |
 | Elevasyon (`Wire1`) | 41 | 42 |
 
-**UART hatları:**
-| Hat | RX | TX | Baud |
-|---|---|---|---|
-| RPi (`Serial1`) | 16 | 17 | 115200 |
-| LiDAR (`Serial2`) | 18 | 15 | 115200 |
+**Haberleşme hatları:**
+| Hat | Fiziksel yol | Baud |
+|---|---|---|
+| RPi (`Serial`, USB) | ESP32-S3'ün native programlama/USB portu (CP2102/CH340 → UART0) | 115200 |
+| LiDAR (`Serial2`) | RX 18 / TX 15 | 115200 |
+
+> **RPi bağlantısı artık USB kablosuyladır**, GPIO16/17 (`RPI_UART_RX_PIN`/`RPI_UART_TX_PIN`)
+> üzerinden **değil**. Bu pin makroları `config.h`'de tarihsel referans olarak
+> duruyor ama kod tarafından kullanılmıyor — RPi tarafı, kartın USB-seri
+> köprü çipine (CP2102/CH340) sabit olarak lehimli UART0 hattını görür.
 
 **MOSFET çıkışları:** Lazer (12), mühimmat besleme motoru (13), ikaz kulesi/beacon (14).
 
@@ -135,9 +142,11 @@ ST_ENGAGING`, herhangi bir yerden `ST_SAFE_STOP` (mühimmat bitti / RPi
 `CMD_SAFE`) veya `ST_EMERGENCY_SHUTDOWN` (fiziksel E-Stop) tetiklenebilir.
 E-Stop pini kesme (`ISR`) ile yakalanır, 50 ms yazılımsal debounce uygulanır.
 
-## UART Protokolü (RPi ↔ ESP32)
+## UART Protokolü (RPi ↔ ESP32, USB üzerinden)
 
-`uart_protocol.h/.cpp`, PARS SBC↔MCU protokolü v1.3'ü uygular.
+`uart_protocol.h/.cpp`, PARS SBC↔MCU protokolü v1.3'ü uygular. Fiziksel taşıyıcı
+**USB kablosudur** — ESP32 tarafında `Serial` (UART0) nesnesine, RPi tarafında
+`/dev/ttyUSB0` veya `/dev/ttyACM0` benzeri bir porta karşılık gelir.
 
 - **Çerçeve:** `0xAA 0x55 | MSG_ID | LEN | PAYLOAD[LEN] | CRC16_LO | CRC16_HI`
 - **CRC:** CRC-16/CCITT-FALSE (poly `0x1021`, init `0xFFFF`), `MSG_ID+LEN+PAYLOAD`
@@ -150,12 +159,49 @@ E-Stop pini kesme (`ISR`) ile yakalanır, 50 ms yazılımsal debounce uygulanır
 (shotCount+targetId), `CMD_MODE`, `CMD_SAFE`, `CMD_HOME`, `CMD_PID`.
 
 **ESP32 → RPi:** `TLM_STATE` (50 Hz; durum, açılar, LiDAR mm, mühimmat,
-flag'ler, kayıp paket sayısı), `ACK_FIRE`, `ACK`, `ERR`.
+flag'ler, kayıp paket sayısı), `ACK_FIRE`, `ACK`, `LOG_MSG` (debug log, bkz.
+aşağıki bölüm), `ERR`.
 
 `CMD_AIM.ctrl` bit alanları: `CTRL_ARM`, `CTRL_LASER`, `CTRL_MOTOR_EN`,
 `CTRL_NO_FIRE`. `TLM_STATE.flags`: `FLAG_ARMED`, `FLAG_MOTORS_ON`,
 `FLAG_LOCKED`, `FLAG_ESTOP`, `FLAG_AZ_LIMIT`, `FLAG_EL_LIMIT`,
 `FLAG_LASER_ON`, `FLAG_AMMO_EMPTY`.
+
+## Debug Log Akışı (LOG_MSG → RPi → YKI)
+
+USB kablosu hem RPi ikili protokolünü hem de debug logları taşıdığı için,
+debug loglar artık ham `Serial.print()` yerine protokolün bir parçası olan
+**`LOG_MSG` (0x84)** çerçeveleriyle gönderilir — aksi halde insan-okunabilir
+metin, RPi'nin ikili çerçeve ayrıştırıcısını bozardı.
+
+- **Gönderme:** `LOG_INFO(fmt, ...)`, `LOG_WARN(fmt, ...)`, `LOG_ERR(fmt, ...)`
+  makroları (`uart_protocol.h`), `sendLog()` üzerinden çalışır.
+- **Payload:** `[level: 1 bayt][metin: printf-tarzı, en fazla 31 bayt]`.
+  `UART_MAX_PAYLOAD = 32` sınırından dolayı metin **31 karakterle kırpılır**
+  — mesajları kısa ve öz tutun, dosya/modül önekleri yerine `level` alanını
+  kullanın.
+- **Alış:** RPi tarafı `LOG_MSG` çerçevesini yakalayıp `level` + metni YKI web
+  arayüzüne iletir (WebSocket vb. — RPi tarafı implementasyonu bu depoda değil).
+- Derece sembolü gibi ASCII-dışı karakterler kullanılmaz (`char(176)` yerine
+  `"deg"` gibi düz metin) — encoding sorunlarına yol açabilir.
+
+Tüm eski `Serial.print`/`println` debug çağrıları bu mekanizmaya taşınmıştır
+(`encoder.cpp`, `joystick.cpp`, `pid_control.cpp`, `safety.cpp`, `tasks.cpp`).
+`LOG_*` makrolarını kullanan her `.cpp` dosyası `uart_protocol.h`'yi include
+etmelidir.
+
+> **Önemli — çakışma riski:** `config.h`'deki `JOYSTICK_ALLOW_SERIAL`
+> özelliği (USB üzerinden `"pitch,yaw,fire,arm"` satırı kabul etme) **kapalı
+> tutulmalıdır** (`0`). USB artık RPi'nin ikili protokol hattı olduğu için,
+> aynı `Serial` nesnesinden ikinci bir metin ayrıştırıcının okuma yapması,
+> baytların iki ayrıştırıcı arasında rastgele bölünmesine — ve RPi
+> protokolünün sürekli bozulmasına — yol açar. Teorik olarak, `CmdAimPayload`
+> içindeki ham `float` baytları arasında `\n`/`,` değerine denk gelen baytlar
+> joystick ayrıştırıcısı tarafından yanlışlıkla bir komut satırı olarak
+> yorumlanabilir; bu da güvenlik açısından kabul edilemez bir risktir. USB
+> üzerinden bench-test joystick girişi gerekiyorsa, boşta kalan GPIO16/17
+> üzerinden ayrı bir donanımsal `Serial1` hattı (harici USB-TTL adaptörle)
+> kullanılmalıdır — RPi hattıyla asla paylaşılmamalıdır.
 
 ## Joystick (WiFi/UDP) Girişi
 
@@ -167,8 +213,6 @@ UDP `"pitch,yaw,fire,arm\n"` satırı olarak ESP32'ye ulaşır
 - `fire`: tetik basılı mı, `arm`: emniyet mandalı açık mı
 - 3 alanlı eski format da kabul edilir; bu durumda `arm=0` varsayılır (ateş yok)
 - Ölü bölge: `JOYSTICK_DEADZONE = 0.08`
-- USB seri üzerinden aynı satır formatı da kabul edilir (tezgah testi için,
-  `JOYSTICK_ALLOW_SERIAL`)
 - Paket akışı kesilirse (`JOYSTICK_TIMEOUT_MS = 300 ms`) tüm eksenler durur ve
   tetik anında bırakılır — son paket `fire=1` olsa bile
 
@@ -205,11 +249,13 @@ tetik çekişi = bir mermi sayımı doğrudur.
 - Gerekli kütüphaneler: `WiFi`, `WiFiUdp`, `ESPmDNS` (joystick WiFi modu için),
   `ESP32Servo` (Kevin Harrington) — tetik servosu için.
 - `config.h` içindeki `AZ_ENCODER_I2C_ADDR` / `ELEV_ENCODER_I2C_ADDR` tanımları
-  yüklenen dosyada yorum satırı halinde (`0x36`); bu makrolar `encoder.cpp`
-  tarafından kullanıldığı için derlemeden önce tanımlanmış olmaları gerekir.
+  (`0x36`) `encoder.cpp` tarafından kullanıldığı için derlemeden önce
+  tanımlanmış olmaları gerekir.
+- `LOG_*` makrolarını kullanan her dosya `#include "uart_protocol.h"` içermelidir.
 - Sahaya çıkmadan önce `config.h` içindeki şu bayraklar gözden geçirilmeli:
   `REQUIRE_LIDAR_FOR_FIRE` (sahada **1** olmalı), `DEFAULT_BOOT_MODE_MANUAL`,
-  `RIFLE_IS_SEMI_AUTO`, `MAX_AMMO_COUNT`.
+  `RIFLE_IS_SEMI_AUTO`, `MAX_AMMO_COUNT`, `JOYSTICK_ALLOW_SERIAL` (**0** olmalı
+  — bkz. yukarıdaki çakışma riski notu).
 
 ## Bilinen Sınırlamalar / Dikkat Edilecekler
 
@@ -219,6 +265,11 @@ tetik çekişi = bir mermi sayımı doğrudur.
   ayarlanmıştır; sahada test edilerek artırılmalıdır (kod içi not).
 - `MOTOR_I2C_SDA_PIN`/`MOTOR_I2C_SCL_PIN` şu an kullanılmıyor, gelecekte
   kaldırılabilir.
+- `RPI_UART_RX_PIN`/`RPI_UART_TX_PIN` (16/17) artık kullanılmıyor (bkz. USB
+  bağlantı notu); ileride tamamen kaldırılabilir veya bench-test amaçlı ayrı
+  bir `Serial1` hattına yönlendirilebilir.
+- `JOYSTICK_ALLOW_SERIAL` **kesinlikle kapalı** tutulmalıdır — açık kalırsa
+  RPi USB protokolüyle çakışır (detay için Debug Log Akışı bölümüne bakın).
 - E-Stop'un fiziksel butonu bırakılması sistemi **kendiliğinden** çalışır hale
   getirmez; RPi tarafından yazılımsal olarak (`CMD_SAFE` sonrası temizleme
   akışı) devreye alınması gerekir.
