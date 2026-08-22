@@ -1,6 +1,7 @@
 #include "safety.h"
 #include "pid_control.h"
 #include "lidar.h"
+#include "trigger.h"
 #include "uart_protocol.h"
 
 
@@ -21,10 +22,6 @@ static bool estopSoftwareActive = false;   // CMD_SAFE kaynakli
 static bool lastRawPinState = false;
 static unsigned long lastPinChangeMillis = 0;
 
-// ---------------- SOLENOID DURUMU ----------------
-static bool solenoidActive = false;
-static unsigned long solenoidStartMillis = 0;
-
 // ---------------- PROTOKOL DURUMU (CMD_AIM/CMD_MODE takibi) ----------------
 static uint8_t lastCtrlBits = 0;
 static uint8_t currentProtoMode = PROTO_MODE_IDLE;
@@ -36,14 +33,15 @@ void IRAM_ATTR estopPinISR() {
 
 void safety_init() {
     pinMode(ESTOP_PIN, INPUT_PULLUP);
-    pinMode(MOSFET4_SOLENOID_PIN, OUTPUT);
     pinMode(MOSFET1_LASER_PIN, OUTPUT);
     pinMode(MOSFET2_FEED_MOTOR_PIN, OUTPUT);
     pinMode(MOSFET3_BEACON_PIN, OUTPUT);
     digitalWrite(MOSFET1_LASER_PIN, LOW);
     digitalWrite(MOSFET2_FEED_MOTOR_PIN, LOW);
     digitalWrite(MOSFET3_BEACON_PIN, LOW);
-    digitalWrite(MOSFET4_SOLENOID_PIN, LOW);
+
+    // Tetik aktuatoru (eski solenoid valfin yerine)
+    trigger_init();
 
     attachInterrupt(digitalPinToInterrupt(ESTOP_PIN), estopPinISR, CHANGE);
 
@@ -52,9 +50,15 @@ void safety_init() {
 
     homingInProgress = false;
     estopSoftwareActive = false;
-    solenoidActive = false;
     lastCtrlBits = 0;
+
+#if DEFAULT_BOOT_MODE_MANUAL
+    // RPi bagli olmasa da joystick calissin diye. Sahada RPi ile
+    // calisiyorsaniz config.h'de DEFAULT_BOOT_MODE_MANUAL 0 yapin.
+    currentProtoMode = PROTO_MODE_MANUAL;
+#else
     currentProtoMode = PROTO_MODE_IDLE;
+#endif
 
     lastRawPinState = (digitalRead(ESTOP_PIN) == HIGH);
     estopPhysicalActive = lastRawPinState;
@@ -62,15 +66,19 @@ void safety_init() {
 
     if (estopPhysicalActive) {
         pid_emergencyStop();
+        trigger_forceRelease();
         currentState = ST_EMERGENCY_SHUTDOWN;
         sendErr(ERR_ESTOP, 0);
-        Serial.println("[GUVENLIK] Baslangicta E-Stop basili tespit edildi! Once serbest birakin.");
+        LOG_WARN("Baslangicta E-Stop basili");
     }
 }
 
 
 void safety_update() {
     estopIsrFlag = false;
+
+    // ---------------- TETIK SERVOSU DURUM MAKINESI ----------------
+    trigger_update();
 
     // ---------------- FIZIKSEL BUTON DEBOUNCE ----------------
     bool rawState = (digitalRead(ESTOP_PIN) == HIGH);
@@ -85,19 +93,14 @@ void safety_update() {
 
             if (estopPhysicalActive) {
                 pid_emergencyStop();
+                trigger_forceRelease();       // tetik cekiliyse ANINDA birak
                 currentState = ST_EMERGENCY_SHUTDOWN;
                 sendErr(ERR_ESTOP, 0);
-                cancelHomingIfActive(); 
-                Serial.println("[GUVENLIK] Fiziksel E-Stop tetiklendi! Sistem kilitlendi.");
+                cancelHomingIfActive();
+                LOG_WARN("Fiziksel E-Stop tetiklendi");
             }
-            // fiziksel buton serbest kalmasi KENDI BASINA sistemi calisir hale getirmez. 
+            // fiziksel buton serbest kalmasi KENDI BASINA sistemi calisir hale getirmez.
         }
-    }
-
-    // ---------------- SOLENOID OTOMATIK KAPATMA ----------------
-    if (solenoidActive && (millis() - solenoidStartMillis >= SOLENOID_PULSE_MS)) {
-        digitalWrite(MOSFET4_SOLENOID_PIN, LOW);
-        solenoidActive = false;
     }
 
     // ---------------- MUHIMMAT BITTI KONTROLU ----------------
@@ -107,18 +110,19 @@ void safety_update() {
 
         currentState = ST_SAFE_STOP;
         pid_emergencyStop();
+        trigger_forceRelease();
         sendErr(ERR_AMMO_DEPLETED, 0);
-        cancelHomingIfActive();   
-        Serial.println("[GUVENLIK] Muhimmat bitti! ST_SAFE_STOP.");
+        cancelHomingIfActive();
+        LOG_WARN("Muhimmat bitti");
     }
 
     // ---------------- HOMING TAMAMLANMA KONTROLU ----------------
     if (homingInProgress && pid_isAtTarget(HOMING_TOLERANCE_DEG)) {
-    homingInProgress = false;
-    pid_resetVelocityLimitDegS();
-    currentState = ST_STANDBY;
-    Serial.println("[GUVENLIK] CMD_HOME tamamlandi, sistem STANDBY.");
-}
+        homingInProgress = false;
+        pid_resetVelocityLimitDegS();
+        currentState = ST_STANDBY;
+        LOG_INFO("CMD_HOME tamamlandi");
+    }
 }
 
 
@@ -126,22 +130,22 @@ void safety_update() {
 void safety_onCmdSafe(uint8_t reason) {
     estopSoftwareActive = true;
     pid_emergencyStop();
+    trigger_forceRelease();
     currentState = ST_SAFE_STOP;
-    cancelHomingIfActive();   
-    Serial.print("[GUVENLIK] RPi'den CMD_SAFE alindi, sebep kodu: ");
-    Serial.println(reason);
+    cancelHomingIfActive();
+    LOG_WARN("CMD_SAFE alindi, sebep=%d", reason);
 }
 
 bool safety_tryClearSoftwareSafeStop() {
     if (estopPhysicalActive) return false;      // fiziksel buton hala basili
     if (ammoRemaining == 0) return false;        // muhimmat yoksa cikilmaz
     if (currentState != ST_SAFE_STOP) return false;
-    if (!estopSoftwareActive) return false;      // SAFE_STOP baska sebepten 
+    if (!estopSoftwareActive) return false;      // SAFE_STOP baska sebepten
 
     estopSoftwareActive = false;
     pid_resumeAfterEstop();
     currentState = ST_STANDBY;
-    Serial.println("[GUVENLIK] Yazilimsal SAFE_STOP temizlendi, sistem STANDBY.");
+    LOG_INFO("SAFE_STOP temizlendi");
     return true;
 }
 
@@ -192,7 +196,7 @@ void safety_setLastCtrlBits(uint8_t ctrl) {
 
     digitalWrite(MOSFET1_LASER_PIN, (ctrl & CTRL_LASER) ? HIGH : LOW);
 
-    // Ikaz lambasi: sistem silahliyken (ARM) veya E-Stop aktifken yansin. (değiştirilebilir - takım kararı değil)
+    // Ikaz lambasi: sistem silahliyken (ARM) veya E-Stop aktifken yansin.
     bool beaconOn = (ctrl & CTRL_ARM) || safety_isEstopActive();
     digitalWrite(MOSFET3_BEACON_PIN, beaconOn ? HIGH : LOW);
 }
@@ -226,7 +230,7 @@ void safety_resetAmmoCount(uint16_t newCount) {
     if (newCount > 0 && currentState == ST_SAFE_STOP && !estopSoftwareActive) {
         pid_resumeAfterEstop();
         currentState = ST_STANDBY;
-        Serial.println("[GUVENLIK] Muhimmat yenilendi, sistem STANDBY moduna donuyor.");
+        LOG_INFO("Muhimmat yenilendi");
     }
 }
 
@@ -259,17 +263,26 @@ FireBlockReason safety_canFire(float currentAzimuthDeg,
                                 bool lidarDataFresh,
                                 bool lidarSignalReliable) {
 
-   
-    if (!(lastCtrlBits & CTRL_ARM))                 return FIRE_BLOCKED_ESTOP; // ARM yok -> asagida ayrica isleniyor
+    // Sira onemli: en agir/en kesin engel once donmeli ki operatore
+    // dogru sebep gosterilsin.
+    if (!(lastCtrlBits & CTRL_ARM))                 return FIRE_BLOCKED_NO_ARM;
     if (safety_isEstopActive())                     return FIRE_BLOCKED_ESTOP;
     if (safety_isAmmoDepleted())                    return FIRE_BLOCKED_AMMO_EMPTY;
     if (safety_isInNoFireZone(currentAzimuthDeg))   return FIRE_BLOCKED_NOFIRE_ZONE;
-    if (targetIsFriendly)                            return FIRE_BLOCKED_FRIENDLY_TARGET;
-    if (!lidarDataFresh)                             return FIRE_BLOCKED_LIDAR_STALE;
-    if (!lidarSignalReliable)                        return FIRE_BLOCKED_LIDAR_UNRELIABLE;
+    if (targetIsFriendly)                           return FIRE_BLOCKED_FRIENDLY_TARGET;
+    if (trigger_isBusy())                           return FIRE_BLOCKED_ACTUATOR_BUSY;
+
+#if REQUIRE_LIDAR_FOR_FIRE
+    if (!lidarDataFresh)                            return FIRE_BLOCKED_LIDAR_STALE;
+    if (!lidarSignalReliable)                       return FIRE_BLOCKED_LIDAR_UNRELIABLE;
     if (!safety_isRangeValidForTarget(targetType, targetRangeM))
-                                                       return FIRE_BLOCKED_OUT_OF_RANGE;
-    if (!pid_isAtTarget())                           return FIRE_BLOCKED_LIDAR_STALE; // "kilitlenme sagli degil" -> NOT_LOCKED'a eslenir
+                                                    return FIRE_BLOCKED_OUT_OF_RANGE;
+#else
+    (void)lidarDataFresh; (void)lidarSignalReliable;
+    (void)targetType;     (void)targetRangeM;
+#endif
+
+    if (!pid_isAtTarget())                          return FIRE_BLOCKED_NOT_LOCKED;
 
     return FIRE_OK;
 }
@@ -277,26 +290,35 @@ FireBlockReason safety_canFire(float currentAzimuthDeg,
 uint8_t safety_fireResultCode(FireBlockReason reason) {
     switch (reason) {
         case FIRE_OK:                       return FIRE_RESULT_OK;
-        case FIRE_BLOCKED_ESTOP:            return FIRE_RESULT_NO_ARM;       // yaklasik: estop/ARM-yok -> NO_ARM
+        case FIRE_BLOCKED_NO_ARM:           return FIRE_RESULT_NO_ARM;
+        case FIRE_BLOCKED_ESTOP:            return FIRE_RESULT_NO_ARM;
         case FIRE_BLOCKED_AMMO_EMPTY:       return FIRE_RESULT_NO_AMMO;
         case FIRE_BLOCKED_NOFIRE_ZONE:      return FIRE_RESULT_NO_FIRE_ZONE;
-        case FIRE_BLOCKED_FRIENDLY_TARGET:  return FIRE_RESULT_NO_FIRE_ZONE; 
+        case FIRE_BLOCKED_FRIENDLY_TARGET:  return FIRE_RESULT_NO_FIRE_ZONE;
         case FIRE_BLOCKED_LIDAR_STALE:      return FIRE_RESULT_NOT_LOCKED;
         case FIRE_BLOCKED_LIDAR_UNRELIABLE: return FIRE_RESULT_NOT_LOCKED;
-        case FIRE_BLOCKED_OUT_OF_RANGE:      return FIRE_RESULT_OUT_OF_LIMIT;
+        case FIRE_BLOCKED_OUT_OF_RANGE:     return FIRE_RESULT_OUT_OF_LIMIT;
+        case FIRE_BLOCKED_NOT_LOCKED:       return FIRE_RESULT_NOT_LOCKED;
+        case FIRE_BLOCKED_ACTUATOR_BUSY:    return FIRE_RESULT_NOT_LOCKED;
     }
     return FIRE_RESULT_NOT_LOCKED;
 }
 
-bool safety_fireSolenoid() {
+
+// ---------------- FIZIKSEL ATESLEME ----------------
+// Eski safety_fireSolenoid()'in yerini alir. Kapinin kendisi degismedi,
+// sadece en alttaki aktuator cagrisi solenoid yerine tetik servosu.
+bool safety_fireTrigger() {
     if (safety_isEstopActive() || safety_isAmmoDepleted()) {
         return false;
     }
+    if (!trigger_pull()) {
+        return false;   // servo hala onceki cekiste - atis SAYILMAZ
+    }
 
-    digitalWrite(MOSFET4_SOLENOID_PIN, HIGH);
-    solenoidActive = true;
-    solenoidStartMillis = millis();
-
+    // Tetik gercekten cekildi; mühimmati simdi dus.
+    // NOT: bu sayim tufek YARI OTOMATIK ise dogrudur (1 cekis = 1 mermi).
+    // Tam otomatikse config.h > RIFLE_IS_SEMI_AUTO 0 yapin ve sayaca guvenmeyin.
     safety_recordShotFired();
     return true;
 }

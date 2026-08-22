@@ -32,6 +32,11 @@ const DEFAULT_CONFIG = {
     teamName: 'Pars Takımı',
     systemId: 1,
   },
+
+  esp32: {
+    host: 'celikkubbe.local',  //DEĞİŞİKLİK GEREKEBİLİR! gerçek ip değil
+    udpPort: 5005,
+  },
 };
 
 class Config {
@@ -52,6 +57,7 @@ class Config {
           video: { ...DEFAULT_CONFIG.video, ...(saved.video || {}) },
           server: { ...DEFAULT_CONFIG.server, ...(saved.server || {}) },
           vehicle: { ...DEFAULT_CONFIG.vehicle, ...(saved.vehicle || {}) },
+          esp32: { ...DEFAULT_CONFIG.esp32, ...(saved.esp32 || {}) },
         };
       }
     } catch (e) {

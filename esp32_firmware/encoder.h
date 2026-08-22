@@ -5,6 +5,9 @@
 #include <Wire.h>
 #include "config.h"
 
+// in config.h or encoder.h
+#define AZ_ENCODER_I2C_ADDR    0x36   // AS5600 default I2C address
+#define ELEV_ENCODER_I2C_ADDR  0x36   // same chip, different bus (Wire1) so same addr is fine
 
 // I2C hatlarını (Wire=Azimut, Wire1=Elevasyon) config.h'deki pinlerle başlatır, her iki AS5600'ün de kendi hattında cevap verdiğini doğrular:
 bool encoder_init();

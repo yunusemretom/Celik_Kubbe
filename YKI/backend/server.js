@@ -12,6 +12,8 @@ const videoDevices = require('./videoDevices');
 // uygulasin diye tek kaynak.
 const { normalizeStreamUrl } = require('../frontend/js/streamUrl');
 
+const joystickBridge = require('./joystickBridge');
+
 // ─── Express ───────────────────────────────────────────────────────────────────
 const app = express();
 app.use(express.json());
@@ -157,17 +159,27 @@ wss.on('connection', (ws) => {
   ws.on('close', () => {
     frontendClients.delete(ws);
     console.log(`[WS] İstemci ayrıldı. Toplam: ${frontendClients.size}`);
+
+    // Kontrol eden istemci kalmadıysa tareti durdur ve ARM'ı düşür.
+    if (frontendClients.size === 0) {
+      joystickBridge.sendStop();
+      console.log('[WS] İstemci kalmadı — joystick durduruldu.');
+    }
   });
 
-  ws.on('error', () => frontendClients.delete(ws));
-});
+  ws.on('error', () => {
+    frontendClients.delete(ws);
+    if (frontendClients.size === 0) joystickBridge.sendStop();
+  });
+});   // <-- EKSİK OLAN KAPANIŞ BURASIYDI: wss.on('connection', ...) burada bitmeli
 
 function handleMessage(ws, msg) {
   switch (msg.type) {
-    case 'command':
+    case 'command': {
       const result = commandBridge.sendCommand(msg.cmd, msg.params || {});
       ws.send(JSON.stringify({ type: 'command_ack', ...result, cmd: msg.cmd }));
       break;
+    }
 
     case 'video_start':
       videoRelay.startStream({
@@ -178,6 +190,10 @@ function handleMessage(ws, msg) {
       broadcast({ type: 'video_status', ...videoRelay.getStatus() });
       break;
 
+    case 'joystick':
+      joystickBridge.sendJoystick(msg);
+      break;
+
     case 'video_stop':
       videoRelay.stopStream();
       break;
@@ -186,7 +202,7 @@ function handleMessage(ws, msg) {
       ws.send(JSON.stringify({ type: 'video_status', ...videoRelay.getStatus() }));
       break;
 
-    case 'settings_update':
+    case 'settings_update': {
       const saved = config.update(msg.settings);
       ws.send(JSON.stringify({ type: 'settings_saved', success: saved }));
       if (saved) {
@@ -200,6 +216,7 @@ function handleMessage(ws, msg) {
         }
       }
       break;
+    }
 
     case 'settings_get':
       ws.send(JSON.stringify({ type: 'config', config: config.get() }));
@@ -235,6 +252,7 @@ server.listen(PORT, () => {
 // Temiz kapanış
 process.on('SIGINT', () => {
   console.log('\n[Server] Kapatılıyor...');
+  joystickBridge.sendStop();
   telemetry.stop();
   commandBridge.disconnect();
   videoRelay.stopStream();
