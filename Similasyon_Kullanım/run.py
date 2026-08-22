@@ -32,6 +32,7 @@ from bridge import (
     BridgeError,
     SteelDomeClient,
     estimate_range,
+    kamera_modeli,
     pixel_to_angles,
 )
 from tracker import (
@@ -109,6 +110,13 @@ def parse_args() -> argparse.Namespace:
     y.add_argument("--maket-size", type=float, default=0.50,
                    help="Balon bulunamayip maketin kendisine nisan alindiginda menzil "
                         "kestiriminde kullanilacak maket boyu (m)")
+
+    k = p.add_argument_group("kamera")
+    k.add_argument("--vinyet-telafi", type=float, default=0.0, metavar="GUC",
+                   help="Kameranin kenar kararmasini geri al. Unity'deki "
+                        "KameraGercekcilik.vinyet degeriyle ayni verilmeli (varsayilan "
+                        "profil 0.26). 0 = kapali. Renk esikleri kadrajin kenarindaki "
+                        "hedefte kayiyorsa acin.")
 
     args = p.parse_args()
     if args.yolo and args.legacy_color:
@@ -204,6 +212,13 @@ def main() -> int:
             now = time.monotonic()
             dt = now - last_time
             last_time = now
+
+            # Vinyet telafisi dedektorden once yapilmali: HSV esikleri kadrajin
+            # kenarinda kararan kirmizi balonu kacirabiliyor. Distorsiyon ise
+            # burada duzeltilmez - tum kareyi remap etmek pahali, yalniz hedef
+            # merkezini tasimak yeterli (pixel_to_angles bunu kendisi yapar).
+            if args.vinyet_telafi > 0.0:
+                frame = kamera_modeli(telemetry).vinyet_telafisi(frame, args.vinyet_telafi)
 
             fire = False
 

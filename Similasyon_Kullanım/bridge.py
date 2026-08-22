@@ -30,6 +30,8 @@ from typing import Iterator, Optional, Tuple
 import cv2
 import numpy as np
 
+from kamera_modeli import KameraModeli
+
 MSG_FRAME = 0x01
 MSG_COMMAND = 0x10
 
@@ -49,6 +51,11 @@ class Telemetry:
     h: int = 0
     vfov: float = 60.0
     frame: int = 0
+    # Unity'deki KameraGercekcilik acikken gelen objektif modeli
+    k1: float = 0.0          # fici distorsiyonu (1. derece)
+    k2: float = 0.0          # fici distorsiyonu (2. derece)
+    exp: float = 1.0         # kameranin o an uyguladigi otomatik pozlama
+    cam_off: float = 0.0     # kameranin menzil referansindan eksenel ilerisi (m)
     raw: dict = field(default_factory=dict)
 
     @classmethod
@@ -193,6 +200,12 @@ def estimate_range(pixel_height: float, tel: Telemetry,
     (F16 icin 10-15 m, helikopter/fuze icin 5-15 m) ve araligin disinda yapilan
     imha puan getirmiyor.
 
+    **Referans noktasi:** goruntuden cikan mesafe *kameraya* olan mesafedir.
+    Puanlama ise taretin donme merkezinden olcer (zemindeki menzil yaylari da
+    oradan cizili). Kamera namlu boyunca ~1.9 m ileridedir; bu duzeltilmezse
+    15 m'lik imha penceresinde %13 hata olur ve menzil disinda kalan bir hedef
+    "gecerli" gorunur. Unity bu farki telemetride `cam_off` ile bildiriyor.
+
     Kestirim kucuk hedeflerde kabalasir: 15 m'de balon ~17 piksel, tek piksellik
     olcum hatasi ~1 m menzil hatasi demektir.
     """
@@ -203,10 +216,25 @@ def estimate_range(pixel_height: float, tel: Telemetry,
     angular = pixel_height * rad_per_px
     if angular <= 1e-6:
         return float("inf")
-    return float(real_size_m / (2.0 * np.tan(angular / 2.0)))
+
+    kameradan = real_size_m / (2.0 * np.tan(angular / 2.0))
+    return float(kameradan + tel.cam_off)
 
 
-def pixel_to_angles(cx: float, cy: float, tel: Telemetry) -> Tuple[float, float]:
+_kamera_onbellek: Optional[KameraModeli] = None
+
+
+def kamera_modeli(tel: Telemetry) -> KameraModeli:
+    """Telemetriye uyan kamera modelini dondurur (degismedikce yeniden kurmaz)."""
+    global _kamera_onbellek
+    veri = tel.raw or {"w": tel.w, "h": tel.h, "vfov": tel.vfov, "k1": tel.k1, "k2": tel.k2}
+    if _kamera_onbellek is None or not _kamera_onbellek.ayni_mi(veri):
+        _kamera_onbellek = KameraModeli.telemetriden(veri)
+    return _kamera_onbellek
+
+
+def pixel_to_angles(cx: float, cy: float, tel: Telemetry,
+                    duzelt: bool = True) -> Tuple[float, float]:
     """
     Goruntudeki bir pikseli, namlunun o noktaya donmesi icin gereken aci
     farkina cevirir.
@@ -214,21 +242,16 @@ def pixel_to_angles(cx: float, cy: float, tel: Telemetry) -> Tuple[float, float]
     Kamera namluyla es eksenli oldugu icin goruntu merkezi tam olarak namlu
     dogrultusudur; dolayisiyla bu fark dogrudan duzeltme acisidir.
 
+    `duzelt=True` iken once objektif distorsiyonu geri alinir. Unity kamerayi
+    gercek bir objektif gibi bozuyor (k1 ~ 0.085); bu duzeltme olmadan kadraj
+    kenarindaki bir hedefte nisan hatasi 0.6 dereceye cikar - 15 m'deki bir
+    balonun yaricapindan buyuk. Telemetride k1/k2 gelmiyorsa (filtre kapali)
+    duzeltme kendiliginden devre disi kalir.
+
     Donen deger: (yaw_hatasi, pitch_hatasi) derece cinsinden.
     Pozitif yaw = saga don, pozitif pitch = yukari bak.
     """
     if tel.w == 0 or tel.h == 0:
         return 0.0, 0.0
 
-    # Merkeze gore normalize edilmis konum (-1..1)
-    nx = (cx - tel.w / 2.0) / (tel.w / 2.0)
-    ny = (cy - tel.h / 2.0) / (tel.h / 2.0)
-
-    half_v = np.radians(tel.vfov) / 2.0
-    aspect = tel.w / tel.h
-
-    # Perspektif projeksiyonun tersi - kucuk aci yaklasimi degil, tam cozum
-    yaw_err = np.degrees(np.arctan(nx * np.tan(half_v) * aspect))
-    pitch_err = np.degrees(np.arctan(-ny * np.tan(half_v)))  # goruntu y'si asagi dogru artar
-
-    return float(yaw_err), float(pitch_err)
+    return kamera_modeli(tel).acisal_hata(cx, cy, duzelt=duzelt)

@@ -363,7 +363,156 @@ Hedef hızı ve kalkış gecikmesi `ParkurManager` üzerindedir
 (`Target Speed`, `Stagger Seconds`). Senaryoyu tekrarlanabilir yapmak için
 `Seed` alanına 0 dışında bir sayı verin.
 
-> Görünür rayları da güncellemek isterseniz `Kol-N/Ray` altındaki küpler
-> sahneye gömülüdür; `LanePath` değerlerini değiştirdikten sonra rayı elle
-> yeniden üretmek gerekir (yol hesabı raydan bağımsız çalışır, sadece görsel
-> uyumsuzluk olur).
+> Görünür raylar artık elle güncellenmiyor: `LanePath` değerlerini değiştirdikten
+> sonra **SteelDome ▸ Görsel Kurulum ▸ Parkur Ölçülerini Uygula** deyin, `Kol-N/Ray`
+> altındaki küpler yoldan yeniden üretilir.
+>
+> Dikkat: bu menü öğesi `farZ`'yi menzilden kendisi hesaplar ve elle verdiğiniz
+> değerin üzerine yazar. Kolun uzunluğunu değiştirmek istiyorsanız
+> `SahaOlculeri.MENZIL` değerini değiştirin (bkz. §11).
+
+---
+
+## 10. Görsel ortamı ve kamerayı ayarlamak
+
+Salonun görünümü (yükseklik, ışık, doku, post-process) tek bir editör betiğinden
+kuruluyor: `Assets/SteelDome/Editor/SahneGorselKurulum.cs`.
+
+### Salonu yeniden kurmak
+
+Unity menüsü: **SteelDome ▸ Görsel Kurulum ▸ Tümünü Uygula**
+
+Betik idempotenttir — ürettiği nesneleri (`Parkur/SahaAydinlatma`,
+`Parkur/Salon_Detay`, `Global Volume`) silip yeniden kurar, sahneyi kaydeder.
+**Play modundayken çalışmaz**, önce Play'den çıkın.
+
+Değiştirmek isteyeceğiniz sabitler betiğin başında:
+
+| Sabit | Varsayılan | Etkisi |
+|---|---|---|
+| `SALON_YUKSEKLIK` | `6.0f` | Duvar ve tavan yüksekliği (m) |
+| `ARMATUR_X` / `ARMATUR_Z` | 3 × 5 ızgara | Tavan armatürlerinin konumu |
+| `DOKU_METRE` | `2f` | Bir dokunun temsil ettiği alan — `doku_uret.py` ile aynı olmalı |
+
+Işık şiddeti `AydinlatmaKur()` içinde (`isik.intensity = 22f`,
+`dolgu.intensity = 3.4f`). Salon karanlık geliyorsa önce bu ikisini değiştirin;
+post-process pozlamasıyla oynamak kamerayı da etkiler.
+
+### Dokuları yeniden üretmek
+
+```bash
+cd /home/tom/Documents/Projeler/Celik_Kubbe/Similasyon_Kullanım
+python araclar/doku_uret.py                       # varsayılan 1024 px
+python araclar/doku_uret.py --boyut 2048 --seed 7 # daha detaylı / farklı desen
+```
+
+Dokular doğrudan Unity projesinin `Assets/SteelDome/Textures` klasörüne yazılır.
+Sonra Unity'de **SteelDome ▸ Görsel Kurulum ▸ Sadece Dokuları İçe Al** (import
+ayarlarını düzeltir: normal harita normal olarak, metalik/pürüzsüzlük lineer ve
+alfası sıkıştırılmamış olarak gelir).
+
+Kendi dokunuzu koyacaksanız aynı adlandırmayı kullanın:
+`T_Wall_Albedo.png`, `T_Wall_Normal.png`, `T_Wall_MetalSmooth.png` (alfa =
+pürüzsüzlük) — `T_Floor_*` ve `T_Ceiling_*` de aynı düzende.
+
+### Kamera bozulmalarını ayarlamak
+
+`MuzzleCam` üzerindeki **KameraGercekcilik** bileşeni. Play modunda değerleri
+değiştirip HUD'daki önizlemeden anında görebilirsiniz; kalıcı olması için aynı
+değerleri `SahneGorselKurulum.KameraProfiliUygula()` içine yazın (kurulum her
+çalıştığında oradan uygulanır).
+
+Sık kullanılanlar:
+
+| Alan | Ne yapar | Denemeye değer |
+|---|---|---|
+| `acik` | Filtreyi tümden kapatır | Ham görüntüyle karşılaştırma |
+| `distorsiyonK1` | Fıçı distorsiyonu | 0 = ideal objektif, 0.15 = geniş açı |
+| `gurultu` | Sensör gürültüsü | 0.03 = kötü ışıkta ucuz kamera |
+| `hedefParlaklik` | Otomatik pozlamanın hedefi | Düşürmek görüntüyü karartır |
+| `pozlamaSuresi` | Hareket bulanıklığı | 1/30 s = belirgin sürüklenme |
+| `okumaSuresi` | Rolling shutter | 0 = global shutter (endüstriyel kamera) |
+| `nicemleme` | Renk kademesi | 32 = belirgin bantlaşma |
+
+> **Dikkat:** `distorsiyonK1`/`K2` değiştirince Python tarafında bir şey yapmanız
+> gerekmez — katsayılar her karede telemetriyle gidiyor ve `bridge.py` modeli
+> kendiliğinden yeniliyor. Ama `vinyet` değerini değiştirirseniz
+> `run.py --vinyet-telafi` parametresini de aynı sayıya çekin.
+
+### Görüntü işlemeyi zorlaştırıp test etmek
+
+Sahada koşullar hiç ideal olmayacak. Dedektörün payını ölçmek için:
+
+```bash
+# Kamerayı kötüleştirin (Unity Inspector'da):
+#   gurultu 0.035, odakYumusakligi 0.55, hedefParlaklik 0.10, nicemleme 48
+python run.py --vinyet-telafi 0.26 --min-area 40
+```
+
+Tespit oranı ciddi düşüyorsa sorun eşiklerdedir; sahaya çıkmadan orada çözün.
+
+---
+
+## 11. Sahanın uzunluğunu değiştirmek
+
+Sahanın ne kadar uzun olduğunu tek bir sabit belirliyor:
+
+`Assets/SteelDome/Editor/SahaOlculeri.cs` → `MENZIL` (varsayılan **20 m**)
+
+Buna bağlı olarak hesaplananlar:
+
+| Öğe | Nasıl |
+|---|---|
+| Saha Z uzunluğu | `MENZIL − SAHA_Z_MIN + 3` = 24 m (Z ∈ [−1, +23]) |
+| Duvar / zemin / tavan | Saha boyuna göre |
+| Tavan armatürleri | ~3.7 m arayla, saha boyunca (şu an 3 × 6 = 18 adet) |
+| Çelik makaslar, kolonlar | Saha boyunca eşit aralıklı |
+| Kolların `farZ` değeri | `sqrt(MENZIL² − nearX²) + cornerRadius` — yaklaşma tam MENZIL'de başlar |
+| Poligon direkleri / kuşak | Z = 1 … saha sonu − 1 m, 4 m arayla |
+| Menzil bantları | `MENZIL_BANTLARI` dizisi (5 / 10 / 15 / MENZIL) |
+| `FireControl.maxRange` | `MENZIL + 5` |
+| `ParkurManager.menzilReferansi` | `MENZIL_REFERANS_YOLU` → `Turret/YawPivot/PitchPivot` |
+
+Değiştirdikten sonra **ikisini de** çalıştırın (sıra önemli değil):
+
+1. **SteelDome ▸ Görsel Kurulum ▸ Parkur Ölçülerini Uygula** — kollar, raylar,
+   poligon, menzil bantları, atış menzili
+2. **SteelDome ▸ Görsel Kurulum ▸ Tümünü Uygula** — duvar/zemin/tavan, aydınlatma,
+   makaslar, kolonlar, süpürgelik
+
+İkisi de Play modunda çalışmaz ve idempotenttir.
+
+> **İmha penceresi ayrı bir şeydir.** Saha 20 m olsa da geçerli imha menzili
+> şartnamedeki gibi ≤ 15 m'dir (`TargetUnit.EngagementWindow`: F16 10-15,
+> helikopter/füze 5-15, mini İHA 0-15). Hedef 20 m'de doğar ama 15 m'ye girene
+> kadar vurulsa da puan getirmez. Bunu değiştirmek isterseniz `TargetUnit.cs`
+> içindeki `max = 15f` satırı — ama o zaman puanlama şartnameden ayrılır.
+>
+> Aynı sebeple `ParkurManager.staticRanges` (Aşama-1) hâlâ **5 / 10 / 15**:
+> oraya 20 eklemek imha edilemeyecek bir hedef koyar ve aşamayı kilitler.
+
+---
+
+## 12. Menzil hangi noktadan ölçülüyor
+
+Üç ayrı yerde "menzil" geçiyor ve üçü de **aynı** noktadan ölçülmeli, yoksa
+şartnamedeki 15 m penceresi kayar:
+
+| Nerede | Referans | Nasıl sağlanıyor |
+|---|---|---|
+| Zemindeki 5/10/15/20 m yayları | Taretin dönme merkezi (0, 1.28, 0) | Yaylar oradan çiziliyor |
+| Puanlama (`ParkurManager`) | Aynı nokta | `menzilReferansi` alanı → `PitchPivot` |
+| Python'un menzil kestirimi | Aynı nokta | `cam_off` telemetriyle geliyor, `estimate_range` ekliyor |
+
+**Namlu ucu referans olarak kullanılmamalı.** İki sebeple:
+
+1. Taretle birlikte döner — 40° yaw'da (1.13, 1.28, 1.34)'e gider, yani aynı
+   hedefin menzili nişan yönüne göre değişir.
+2. Referans noktadan 1.75 m ileridedir; 16.75 m'deki bir hedefi 15.00 m gösterir
+   ve menzil dışı bir imhayı geçerli sayar.
+
+`ParkurManager.menzilReferansi` boş bırakılırsa eski (namlu ucu) davranışına
+düşer — kurulum betiği bunu her çalıştığında doğru transform'a bağlar.
+
+Doğrulamak isterseniz Play modunda taretin açısını değiştirip aynı hedefin
+menzilinin **değişmemesi** gerekir.
