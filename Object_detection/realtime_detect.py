@@ -22,6 +22,8 @@ import cv2
 import numpy as np
 from ultralytics import YOLO
 
+from yolo_dedektor import model_yolu_sec
+
 try:
     from sahi import AutoDetectionModel
     from sahi.predict import get_sliced_prediction
@@ -147,8 +149,14 @@ def run_realtime_detection(args):
     """
     use_sahi = args.sahi and SAHI_AVAILABLE
 
-    print(f"[BİLGİ] Model yükleniyor: {args.weights}")
-    model = YOLO(args.weights)
+    # .engine dosyaları taşınabilir DEĞİLDİR: başka bir GPU'da/TensorRT
+    # sürümünde derlenen motor, python'u segmentation fault ile öldürür
+    # (istisna değil, çökme). model_yolu_sec motoru ayrı bir süreçte dener ve
+    # açılmıyorsa aynı isimli .pt dosyasına düşer.
+    agirlik = model_yolu_sec(args.weights)
+
+    print(f"[BİLGİ] Model yükleniyor: {agirlik}")
+    model = YOLO(agirlik)
 
     # SAHI modeli hazırla
     detection_model = None
@@ -157,7 +165,7 @@ def run_realtime_detection(args):
               f"Örtüşme: {args.overlap_ratio:.0%}")
         detection_model = AutoDetectionModel.from_pretrained(
             model_type="yolov8",
-            model_path=args.weights,
+            model_path=agirlik,
             confidence_threshold=args.conf,
             device=args.device,
         )
@@ -270,8 +278,10 @@ def parse_args():
     ap = argparse.ArgumentParser(
         description="SAHI destekli gerçek zamanlı nesne tespiti (YOLOv8)"
     )
-    ap.add_argument("--weights", default="/home/tom/Downloads/best (05.08).enginepytho",
-                     help="YOLO model yolu (.pt veya .engine)")
+    ap.add_argument("--weights", default="/home/tom/Downloads/best (05.08.02).yerel.engine",
+                     help="YOLO model yolu (.pt veya .engine). BASKA bir makinede "
+                          "uretilmis .engine acilmaz; o durumda ayni isimli .pt "
+                          "otomatik kullanilir")
     ap.add_argument("--source", default="0",
                      help="Video kaynağı: 0 (webcam), video.mp4, rtsp://...")
     ap.add_argument("--conf", type=float, default=0.5,

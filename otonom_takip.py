@@ -8,7 +8,11 @@ Aciklama:
     OTONOM modlar arasinda gecis yapar:
 
       MANUEL : eksenler kumandadan surulur (joyistik_control ile ayni)
-      OTONOM : kirmizi nesne bulunur ve GORUNTUNUN ORTASINA getirilir
+      OTONOM : hedef bulunur ve GORUNTUNUN ORTASINA getirilir
+
+    Hedef iki yoldan bulunabilir (--dedektor):
+      renk : HSV esikleme - model gerekmez, cok hizli acilir
+      yolo : egitilmis model - drone / helicopter / plane / rocket
 
     Goruntunun ortasina MAVI nisangah cizilir; otonom modun hedefi, bulunan
     nesneyi bu nisangaha oturtmaktir. Takip edilecek renk --renk ile
@@ -27,6 +31,9 @@ Kullanim:
     python3 otonom_takip.py --kamera test                # kamera yokken sahte hedef
     python3 otonom_takip.py --renk blue                  # mavi nesne takip et
     python3 otonom_takip.py --tara                       # hedef yokken yatayda supur
+    python3 otonom_takip.py --otonom                     # dogrudan otonom modda basla
+    python3 otonom_takip.py --dedektor yolo              # egitilmis YOLO modeli ile
+    python3 otonom_takip.py --dedektor yolo --sinif drone  # yalnizca drone takip et
 
 Tuslar:
     Y      : MANUEL <-> OTONOM
@@ -70,16 +77,39 @@ from tracker import (  # noqa: E402  (yol eklendikten sonra yuklenebilir)
     TurretTracker,
 )
 
+#: YOLO dedektoru Object_detection altinda; agir importlari (torch/ultralytics)
+#: yalnizca --dedektor yolo secilince yapilir, renk modu hizli acilmaya devam eder.
+OD_DIR = Path(__file__).resolve().parent / "Object_detection"
+if str(OD_DIR) not in sys.path:
+    sys.path.insert(0, str(OD_DIR))
+
 #: Nisangah rengi (BGR). tracker.py'deki mavi ile ayni.
 NISANGAH_RENGI = DRAW_COLORS["blue"]
 
 #: Webcam'in dikey gorus acisi (derece). Piksel hatasini aci hatasina cevirmek
 #: icin gerekir; kendi kameranizin degeriyle degistirin, yanlis olmasi takibi
 #: bozmaz ama kazanci (dolayisiyla tepki hizini) degistirir.
-VARSAYILAN_VFOV = 48.0
+VARSAYILAN_VFOV = 96.0
 
 #: Otonom modda uretilen hiz komutunun carpani. Mekanik yavassa dusurun.
-OTONOM_HIZ_CARPANI = 1.0
+OTONOM_HIZ_CARPANI = 0.35
+
+#: YOLO agirliklarinin varsayilan yolu. .engine dosyalari BASKA bir makinede
+#: uretilmisse acilmaz (surec cokerek olur); yolo_dedektor bunu ayri bir
+#: surecte deneyip ayni isimli .pt dosyasina duser.
+VARSAYILAN_MODEL = "/home/tom/Desktop/best.pt"
+
+#: Otonom moddaki DIKEY eksenin yonu.
+#:
+#: Goruntuden hesaplanan pitch hatasi "hedef merkezin ustunde ise yukari don"
+#: anlamina gelir; ancak bunun kartta hangi fiziksel yone karsilik geldigi
+#: motorun/redüktörün montaj yonune baglidir. Bu kurulumda ters cikti: yukari
+#: komutu tareti asagi suruyordu. Bu yalnizca isaret hatasi degil, kapali
+#: cevrimi POZITIF geri beslemeye cevirir - taret hedeften uzaklasarak kacar.
+#:
+#: Mekanigi degistirir de yon duzelirse --dikey-duz ile +1.0 yapabilirsin.
+#: Yatay eksen dogru calistigi icin ona dokunulmadi.
+DIKEY_YON = -1.0
 
 
 def piksel_aci_hatasi(
@@ -151,6 +181,7 @@ def kamera_ac(kaynak: str, genislik: int, yukseklik: int):
     if kam.isOpened():
         kam.set(cv2.CAP_PROP_FRAME_WIDTH, genislik)
         kam.set(cv2.CAP_PROP_FRAME_HEIGHT, yukseklik)
+        
         # Tampon kucuk tutulur: takipte eski kare islemek gecikme demektir.
         kam.set(cv2.CAP_PROP_BUFFERSIZE, 1)
     return kam
@@ -189,6 +220,13 @@ def cerceve_ciz(
         cv2.circle(kare, (int(hedef.cx), int(hedef.cy)), 4, renk, -1)
         # Hedeften nisangaha cizgi: kapatilmasi gereken hata gorunur olsun.
         cv2.line(kare, (int(hedef.cx), int(hedef.cy)), (ox, oy), renk, 1)
+        # YOLO dedektorunde sinif adi ve guven skoru da yazilir; renk
+        # dedektorunde bu alanlar olmadigi icin atlanir.
+        etiket = getattr(hedef, "label", "")
+        if etiket:
+            cv2.putText(kare, f"{etiket} {getattr(hedef, 'score', 0.0):.2f}",
+                        (x, max(y - 8, 14)), cv2.FONT_HERSHEY_SIMPLEX, 0.5,
+                        renk, 2, cv2.LINE_AA)
 
     mod_yazi = "OTONOM" if otonom else "MANUEL"
     mod_renk = (60, 220, 90) if otonom else (200, 200, 200)
@@ -213,13 +251,39 @@ def cerceve_ciz(
 def main(argv=None) -> int:
     p = argparse.ArgumentParser(description="Kirmizi hedef takibi + kumanda")
     p.add_argument("--kamera", default="0", help="Kamera indeksi/yolu, veya 'test'")
-    p.add_argument("--genislik", type=int, default=640)
-    p.add_argument("--yukseklik", type=int, default=480)
+    p.add_argument("--genislik", type=int, default=1280)
+    p.add_argument("--yukseklik", type=int, default=720)
     p.add_argument("--renk", default="red", help="Takip edilecek renk (red/blue/green/yellow)")
     p.add_argument("--min-alan", type=int, default=300, help="Bu alandan kucuk lekeler yok sayilir")
+
+    d = p.add_argument_group("dedektor")
+    d.add_argument("--dedektor", default="renk", choices=("renk", "yolo"),
+                   help="renk: HSV esikleme (hizli, model gerekmez) | "
+                        "yolo: egitilmis model (drone/helicopter/plane/rocket)")
+    d.add_argument("--model", default=VARSAYILAN_MODEL,
+                   help="YOLO agirlik dosyasi (.pt veya .engine)")
+    d.add_argument("--conf", type=float, default=0.35, help="YOLO guven esigi")
+    d.add_argument("--sahi", "--yolo-sahi", dest="sahi", action="store_true",
+                   help="YOLO'da SAHI dilimli cikarim kullan (kucuk/uzak hedefleri bulur)")
+    d.add_argument("--slice-size", type=int, default=640,
+                   help="SAHI dilim boyutu (piksel)")
+    d.add_argument("--overlap-ratio", type=float, default=0.2,
+                   help="SAHI ortusme orani")
+    d.add_argument("--sinif", default=None,
+                   help="Yalnizca bu siniflari takip et, virgulle ayir "
+                        "(or. --sinif drone,plane). Bos = hepsi")
+    d.add_argument("--imgsz", type=int, default=640, help="YOLO cikarim boyutu")
+    d.add_argument("--cihaz", default="", help="'' (otomatik), 'cpu' veya '0'")
     p.add_argument("--vfov", type=float, default=VARSAYILAN_VFOV, help="Kameranin dikey gorus acisi")
     p.add_argument("--tara", action="store_true", help="Hedef yokken yatayda supurerek ara")
     p.add_argument("--pencere-yok", action="store_true", help="OpenCV penceresi acma")
+    p.add_argument("--otonom", action="store_true",
+                   help="Otonom modda basla (kol yoksa Y tusuna basilamadigi "
+                        "icin baska turlu otonoma gecilemez)")
+    p.add_argument("--dikey-duz", action="store_true",
+                   help="Otonom moddaki dikey ekseni ters cevirme (varsayilan: "
+                        "ters). Taret hedefi dikeyde takip etmek yerine ondan "
+                        "kaciyorsa bu secenegi kaldirin/ekleyin")
 
     g = p.add_argument_group("karta gonderim")
     g.add_argument("--send", action="store_true", help="Komutlari karta gonder")
@@ -236,6 +300,10 @@ def main(argv=None) -> int:
     g.add_argument("--no-rumble", action="store_true")
     args = p.parse_args(argv)
 
+    # Dikey eksenin isareti: varsayilan ters (bu kurulumda yukari komutu
+    # tareti asagi suruyordu), --dikey-duz ile duz.
+    dikey_yon = 1.0 if args.dikey_duz else DIKEY_YON
+
     kam = kamera_ac(args.kamera, args.genislik, args.yukseklik)
     if not kam.isOpened():
         print(f"Kamera acilamadi: {args.kamera}  (kamera yoksa --kamera test deneyin)")
@@ -246,7 +314,20 @@ def main(argv=None) -> int:
         print("Kol bulunamadi; otonom mod calisir ama Y ile mod degistiremezsiniz.")
     haptic = HapticFeedback(pad, enabled=not args.no_rumble)
 
-    dedektor = ColorTargetDetector(colors=[args.renk], min_area=args.min_alan)
+    if args.dedektor == "yolo":
+        from yolo_dedektor import YoloTargetDetector
+        dedektor = YoloTargetDetector(
+            args.model,
+            conf=args.conf,
+            siniflar=args.sinif.split(",") if args.sinif else None,
+            device=args.cihaz,
+            imgsz=args.imgsz,
+            use_sahi=args.sahi,
+            slice_size=args.slice_size,
+            overlap_ratio=args.overlap_ratio,
+        )
+    else:
+        dedektor = ColorTargetDetector(colors=[args.renk], min_area=args.min_alan)
     # search_pitch_deg=0: tarama sirasinda dikey eksen seviyede kalsin.
     # tracker.py'deki varsayilan (3 derece) simulasyondaki hedef yuksekligine
     # gore ayarlanmis; webcam kurulumunda dikeyi bosuna yukari surerdi.
@@ -260,7 +341,7 @@ def main(argv=None) -> int:
             else ArduinoLink(port=args.port, reset_delay_s=args.reset_delay, **ortak)
         link.open()
 
-    otonom = False
+    otonom = args.otonom
     onceki_kilit = False
     # Tarama, taretin nerede oldugunu bilmeyi gerektirir; encoder geri beslemesi
     # olmadigi icin komut edilen hizdan olu hesapla tahmin ediyoruz.
@@ -271,6 +352,8 @@ def main(argv=None) -> int:
     try:
         while True:
             ok, kare = kam.read()
+            kare = cv2.flip(kare, 1)   # aynadaki gibi: saga sola donunce goruntu de donsun
+            kare = cv2.flip(kare, 0)   # ters montaj: goruntu de ters olsun
             if not ok:
                 print("Kamera karesi alinamadi.")
                 break
@@ -312,7 +395,10 @@ def main(argv=None) -> int:
                     yaw_cmd = pitch_cmd = 0.0
 
                 yaw_cmd *= OTONOM_HIZ_CARPANI
-                pitch_cmd *= OTONOM_HIZ_CARPANI
+                # Dikey eksenin fiziksel yonu: DIKEY_YON aciklamasina bak.
+                # Carpim burada yapilir ki asagidaki olu hesap da taretin
+                # GERCEKTE gittigi yonu izlesin.
+                pitch_cmd *= OTONOM_HIZ_CARPANI * dikey_yon
                 # Olu hesap: taretin tahmini konumu (yalnizca tarama icin).
                 yaw_tahmin += yaw_cmd * takipci.max_yaw_speed * dt
                 pitch_tahmin += pitch_cmd * takipci.max_pitch_speed * dt
