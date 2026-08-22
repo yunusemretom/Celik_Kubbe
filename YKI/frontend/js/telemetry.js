@@ -119,8 +119,15 @@ class TelemetryPage {
 
     const time = new Date().toLocaleTimeString('tr-TR', { hour12: false });
 
-    // Basit key-value satırları
-    const interestingKeys = ['battery', 'altitude', 'speed', 'mode', 'rssi', 'tracking'];
+    // Gelen paketteki TÜM sayısal/metinsel alanlar gösterilir. Sabit bir liste
+    // kullanmak, ESP'nin gönderdiği alanları (m1_hiz, rt, stop, atis_sayisi...)
+    // görünmez yapıyordu; kaynak değiştiğinde tablo boş kalıyordu.
+    const gizli = ['_meta', 'seq', 'src', 'timestamp', 'time'];
+    const interestingKeys = Object.keys(data).filter((k) => {
+      if (gizli.includes(k)) return false;
+      const t = typeof data[k];
+      return t === 'number' || t === 'string' || t === 'boolean';
+    });
     interestingKeys.forEach((key) => {
       if (data[key] === undefined) return;
       const row = document.createElement('div');

@@ -7,8 +7,8 @@
   "video": {
     "source": "mjpeg",
     "rtspUrl": "rtsp://192.168.1.100:8554/camera",
-    "mjpegUrl": "http://127.0.0.1:8090/stream",
-    "device": "/dev/video0",
+    "mjpegUrl": "http://10.167.64.76:8090/stream",
+    "device": "/dev/video1",
     "protocol": "rtsp",
     "bitrate": 800,
     "fps": 30,

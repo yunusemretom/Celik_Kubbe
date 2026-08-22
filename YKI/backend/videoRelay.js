@@ -1,6 +1,7 @@
 const { spawn } = require('child_process');
 const WebSocket = require('ws');
 const EventEmitter = require('events');
+const videoDevices = require('./videoDevices');
 
 class VideoRelay extends EventEmitter {
   constructor(config) {
@@ -15,6 +16,8 @@ class VideoRelay extends EventEmitter {
     this.currentUrl = null;
     this.currentSource = null;
     this.lastError = null;
+    this._esnekMod = false;   // cozunurluk dayatmadan yeniden deneme
+    this._sonOpts = null;
   }
 
   startServer() {
@@ -52,8 +55,31 @@ class VideoRelay extends EventEmitter {
     const fps = String(cfg.fps || 30);
 
     if (opts.source === 'device') {
-      // V4L2 kamera: çözünürlük/fps sürücüden istenir, ffmpeg dönüştürmez.
-      this.currentUrl = opts.device || cfg.device || '/dev/video0';
+      let dev = opts.device || cfg.device || '/dev/video0';
+
+      // Kaydedilmiş cihaz artık yoksa ya da metadata düğümüyse (kare vermez)
+      // gerçek bir kameraya geç. Kamera numaraları takma sırasına göre
+      // kaydığı için yki_config.json'daki yol her açılışta doğru olmayabilir.
+      if (!videoDevices.isCaptureDevice(dev)) {
+        const yedek = videoDevices.pickFallback(dev);
+        if (yedek) {
+          console.warn(`[Video] ${dev} görüntü veren bir cihaz değil -> ${yedek} kullanılıyor`);
+          this.emit('warning', `${dev} bulunamadı, ${yedek} kullanılıyor`);
+          dev = yedek;
+        } else {
+          console.error('[Video] Sistemde hiç kamera bulunamadı');
+          this.emit('error', 'Sistemde kamera bulunamadı (/dev/video* yok)');
+        }
+      }
+
+      this.currentUrl = dev;
+
+      // İkinci denemede çözünürlük/fps dayatmayı bırakırız: kamera istenen
+      // kipi desteklemiyorsa ffmpeg "Invalid argument" ile kapanır, oysa
+      // sürücünün kendi varsayılanıyla sorunsuz açılır.
+      if (this._esnekMod) {
+        return ['-f', 'v4l2', '-i', this.currentUrl];
+      }
       return [
         '-f', 'v4l2',
         '-framerate', fps,
@@ -85,6 +111,11 @@ class VideoRelay extends EventEmitter {
     const cfg = this.config.get('video');
     const [width, height] = (cfg.resolution || '1280x720').split('x');
     this.currentSource = opts.source || 'rtsp';
+    this._sonOpts = opts;          // başarısız olursa yeniden denemek için
+    // Esnek mod YALNIZCA içeriden yapılan tekrar denemede açık olmalı. Aksi
+    // halde bir kez devreye girdikten sonra açık kalır ve sonraki normal
+    // başlatmalarda da çözünürlük ayarı sessizce yok sayılırdı.
+    this._esnekMod = !!opts._retry;
 
     const args = [
       '-loglevel', 'warning',
@@ -130,9 +161,22 @@ class VideoRelay extends EventEmitter {
       const failed = this.streaming && code !== 0 && this.frameCount === 0;
       this.streaming = false;
       this.ffmpegProcess = null;
+
+      // Kamera istenen çözünürlük/fps'i desteklemiyorsa ffmpeg hiç kare
+      // üretmeden kapanır. Bir kez de sürücünün kendi varsayılanıyla dene;
+      // çoğu USB kamera 1280x720@30 veremez ama 640x480 verir.
+      if (failed && this.currentSource === 'device' && !this._esnekMod
+          && this._bicimHatasi(this.lastError)) {
+        console.warn('[Video] Çözünürlük/fps kabul edilmedi, kameranın kendi '
+          + 'varsayılanıyla yeniden deneniyor');
+        const tekrar = { ...this._sonOpts, device: this.currentUrl, _retry: true };
+        setTimeout(() => this.startStream(tekrar), 300);
+        return;
+      }
+
       if (failed) {
         this.emit('error', `Kaynak açılamadı (${this.currentUrl}): `
-          + (this.lastError || `ffmpeg kod ${code}`));
+          + (this.lastError || `ffmpeg kod ${code}`) + this._ipucu(this.lastError));
       }
       this.emit('stopped');
       this._broadcastStatus();
@@ -151,6 +195,31 @@ class VideoRelay extends EventEmitter {
     });
 
     this._broadcastStatus();
+  }
+
+  /** ffmpeg hatası "bu kip desteklenmiyor" anlamına mı geliyor? */
+  _bicimHatasi(msg) {
+    if (!msg) return true;    // sebep belli değilse esnek modu bir kez dene
+    return /Invalid argument|Inappropriate ioctl|not support|Cannot find|pixel format|framerate|video_size/i
+      .test(msg);
+  }
+
+  /** Kullanıcıya ne yapması gerektiğini söyleyen kısa ek. */
+  _ipucu(msg) {
+    if (!msg) return '';
+    if (/busy/i.test(msg)) {
+      return ' — kamerayı başka bir uygulama kullanıyor '
+        + '(otonom_takip.py, tarayıcı sekmesi veya önceki bir ffmpeg). '
+        + 'Kontrol: fuser -v ' + this.currentUrl;
+    }
+    if (/No such file|not found/i.test(msg)) {
+      return ' — kamera takılı değil ya da yol değişmiş. '
+        + 'Ayarlar > Kamera listesinden yeniden seçin.';
+    }
+    if (/Permission denied/i.test(msg)) {
+      return ' — kullanıcı "video" grubunda değil: sudo usermod -aG video $USER';
+    }
+    return '';
   }
 
   stopStream() {

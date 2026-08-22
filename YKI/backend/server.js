@@ -7,6 +7,10 @@ const config = require('./config');
 const TelemetryBridge = require('./telemetryBridge');
 const CommandBridge = require('./commandBridge');
 const VideoRelay = require('./videoRelay');
+const videoDevices = require('./videoDevices');
+// Adres duzeltici tarayici ile ORTAK dosyadan gelir: iki taraf ayni kurallari
+// uygulasin diye tek kaynak.
+const { normalizeStreamUrl } = require('../frontend/js/streamUrl');
 
 // ─── Express ───────────────────────────────────────────────────────────────────
 const app = express();
@@ -17,25 +21,67 @@ app.use(express.static(path.join(__dirname, '../frontend')));
 // Not: bu rotalar aşağıdaki catch-all'dan ÖNCE tanımlanmalı, yoksa istek
 // index.html ile cevaplanır ve arayüzde JSON ayrıştırma hatası olur.
 
-/** Sistemdeki V4L2 kameralarını listeler. */
+/**
+ * Sistemdeki V4L2 kameralarını listeler.
+ * Yalnızca GÖRÜNTÜ VEREN düğümler döner: UVC kameralar her biri için ikinci
+ * bir metadata düğümü (/dev/videoN+1) açar ve o düğüm kare vermez. Eskiden
+ * ikisi de listelendiği için aynı isimden iki seçenek çıkıyor, metadata
+ * düğümü seçildiğinde kamera sessizce açılmıyordu.
+ */
 app.get('/api/devices/video', (_, res) => {
-  const fs = require('fs');
   try {
-    const devices = fs.readdirSync('/dev')
-      .filter((f) => /^video\d+$/.test(f))
-      .sort((a, b) => parseInt(a.slice(5)) - parseInt(b.slice(5)))
-      .map((f) => {
-        // Sürücü adı: /sys/class/video4linux/videoN/name
-        let name = 'Bilinmeyen cihaz';
-        try {
-          name = fs.readFileSync(`/sys/class/video4linux/${f}/name`, 'utf8').trim();
-        } catch (_) {}
-        return { path: `/dev/${f}`, name };
-      });
-    res.json({ devices });
+    res.json({ devices: videoDevices.listCaptureDevices() });
   } catch (e) {
     res.status(500).json({ devices: [], error: e.message });
   }
+});
+
+/**
+ * MJPEG vekil (proxy) ucu.
+ *
+ * NEDEN GEREKLI: tarayıcı uzak bir MJPEG kaynağını doğrudan çekerken kaynak
+ * sunucu CORS başlığı göndermiyorsa ya da yalnızca sunucunun bulunduğu ağdan
+ * erişilebiliyorsa görüntü gelmez. Burada akışı YKI sunucusu çeker ve aynı
+ * origin üzerinden tarayıcıya aktarır; CORS ve erişim sorunları ortadan kalkar.
+ *
+ * Kullanım: /api/video/mjpeg?url=http%3A%2F%2F10.25.64.85%3A8090%2Fstream
+ */
+app.get('/api/video/mjpeg', (req, res) => {
+  let hedef;
+  try {
+    hedef = new URL(normalizeStreamUrl(req.query.url || ''));
+  } catch (e) {
+    res.status(400).type('text').send('Geçersiz URL');
+    return;
+  }
+  if (hedef.protocol !== 'http:' && hedef.protocol !== 'https:') {
+    res.status(400).type('text').send('Yalnızca http/https desteklenir');
+    return;
+  }
+
+  const istemci = hedef.protocol === 'https:' ? require('https') : require('http');
+  const istek = istemci.get(hedef, (kaynak) => {
+    if (kaynak.statusCode !== 200) {
+      res.status(502).type('text').send(`Kaynak HTTP ${kaynak.statusCode} döndü`);
+      kaynak.resume();
+      return;
+    }
+    // Content-Type sınır (boundary) bilgisini içerir, aynen aktarılmalı.
+    res.writeHead(200, {
+      'Content-Type': kaynak.headers['content-type'] || 'multipart/x-mixed-replace',
+      'Cache-Control': 'no-cache, private',
+      'Access-Control-Allow-Origin': '*',
+      Connection: 'close',
+    });
+    kaynak.pipe(res);
+    res.on('close', () => kaynak.destroy());
+  });
+
+  istek.on('error', (err) => {
+    console.error('[Video] MJPEG vekil hatası:', err.message);
+    if (!res.headersSent) res.status(502).type('text').send(`Kaynağa ulaşılamadı: ${err.message}`);
+  });
+  istek.setTimeout(8000, () => istek.destroy(new Error('bağlantı zaman aşımı')));
 });
 
 app.get('*', (_, res) => res.sendFile(path.join(__dirname, '../frontend/index.html')));
@@ -80,6 +126,9 @@ commandBridge.on('response', (res) => broadcast({ type: 'command_response', data
 
 // Video olayları
 videoRelay.on('error', (msg) => broadcast({ type: 'video_error', error: msg }));
+// Kaynak değiştirildi ama yayın devam ediyor (ör. kayıtlı cihaz bulunamadı):
+// hata değil, kullanıcıyı bilgilendirme.
+videoRelay.on('warning', (msg) => broadcast({ type: 'video_warning', warning: msg }));
 // Yayın kendiliğinden düşerse arayüz "sinyal yok"a dönsün
 videoRelay.on('stopped', () => broadcast({ type: 'video_status', streaming: false }));
 

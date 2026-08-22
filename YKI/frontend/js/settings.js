@@ -85,9 +85,20 @@ class SettingsPage {
         if (!opts.rtspUrl) { window.showToast('RTSP URL giriniz', 'warning'); return; }
         persist.rtspUrl = opts.rtspUrl;
       } else if (source === 'mjpeg') {
-        opts.mjpegUrl = document.getElementById('cfg-mjpeg-url').value;
-        if (!opts.mjpegUrl) { window.showToast('MJPEG URL giriniz', 'warning'); return; }
-        persist.mjpegUrl = opts.mjpegUrl;
+        const girilen = document.getElementById('cfg-mjpeg-url').value;
+        if (!girilen.trim()) { window.showToast('MJPEG URL giriniz', 'warning'); return; }
+        // Adresi kaydetmeden ÖNCE düzelt: eksik http://, sondaki nokta,
+        // kopyala-yapıştırdan gelen boşluk. Düzeltilmiş hali kutuya da
+        // yazılır ki kullanıcı neyin kaydedildiğini görsün.
+        const { url, duzeltmeler } = window.normalizeStreamUrlDetay(girilen, {
+          defaultPath: '/stream',
+        });
+        if (duzeltmeler.length) {
+          document.getElementById('cfg-mjpeg-url').value = url;
+          window.showToast(`Adres düzeltildi: ${duzeltmeler.join(', ')}`, 'info');
+        }
+        opts.mjpegUrl = url;
+        persist.mjpegUrl = url;
       }
 
       ykiWS.send({ type: 'settings_update', settings: { video: persist } });

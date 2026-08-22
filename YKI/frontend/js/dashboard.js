@@ -351,6 +351,12 @@ class Dashboard {
       this._onStreamStopped();
     });
 
+    // Yayın sürüyor ama sunucu kaynağı değiştirmek zorunda kaldı (kayıtlı
+    // kamera bulunamadı vb.). Yayını durdurmaz, yalnızca haber verir.
+    ykiWS.on('video_warning', (msg) => {
+      window.showToast('Kamera: ' + msg.warning, 'warning');
+    });
+
     ykiWS.on('telemetry', (msg) => {
       this._updateOverlay(msg.data);
       this._updateInstruments(msg.data);
@@ -462,16 +468,36 @@ class Dashboard {
     window.showToast(`Yayın başlatılıyor: ${what}`, 'info');
   }
 
-  _startMJPEG(url) {
+  _startMJPEG(url, opts = {}) {
     if (!url) { window.showToast('MJPEG URL giriniz', 'error'); return; }
+
+    // Adresi düzelt: eksik şema, sondaki nokta, boşluk. Bunlar sessiz
+    // başarısızlığın en sık sebebi ("10.25.64.85." çözümlenemez).
+    // Vekil adresi ("/api/video/mjpeg?...") zaten aynı origin'de ve göreli;
+    // ona dokunulmaz, yoksa başına http:// eklenip bozulur.
+    if (!url.startsWith('/')) {
+      const { url: temiz, duzeltmeler } = window.normalizeStreamUrlDetay(url, {
+        defaultPath: '/stream',
+      });
+      if (duzeltmeler.length) {
+        window.showToast(`Adres düzeltildi (${duzeltmeler.join(', ')}): ${temiz}`, 'info');
+      }
+      url = temiz;
+    }
+
     this._mjpegUrl = url;
     this._mjpegErrors = 0;
+    this._mjpegVekil = !!opts.vekil;
     this.webcamVideo.classList.add('hidden');
     this.canvas.classList.remove('hidden');
 
     // Draw MJPEG img to canvas
     const img = new Image();
-    img.crossOrigin = 'anonymous';
+    // DİKKAT: burada crossOrigin='anonymous' KULLANILMAZ. Kaynak sunucu
+    // Access-Control-Allow-Origin göndermiyorsa (çoğu MJPEG sunucusu
+    // göndermez) tarayıcı görüntüyü hiç yüklemez ve hata bile göstermez.
+    // Canvas'tan piksel okumadığımız için (getImageData/toDataURL yok)
+    // "kirlenmiş canvas" bizim için sorun değil.
     this._mjpegImg = img;
 
     let drawn = 0;
@@ -505,11 +531,23 @@ class Dashboard {
       // (Eskiden sonsuza kadar sessizce denerdi: kamera "hiç açılmıyor" görünürdü.)
       if (this._mjpegImg !== img) return;
       this._mjpegErrors++;
+
+      // 4 denemeden sonra sunucu üzerinden gitmeyi dene. Tarayıcı kaynağa
+      // erişemiyor olabilir (CORS engeli, farklı ağ, karışık içerik); YKI
+      // sunucusu erişebiliyorsa yayın oradan aktarılır.
+      if (this._mjpegErrors === 4 && !this._mjpegVekil) {
+        const vekilUrl = `/api/video/mjpeg?url=${encodeURIComponent(url)}`;
+        window.showToast('Doğrudan bağlanılamadı, sunucu üzerinden deneniyor...', 'warning');
+        this.stopCamera();
+        this._startMJPEG(vekilUrl, { vekil: true });
+        return;
+      }
+
       if (this._mjpegErrors === 5) {
         window.showToast(`MJPEG kaynağına ulaşılamıyor: ${url}`, 'error');
       }
       if (this._mjpegErrors > 20) {
-        window.showToast('MJPEG bağlantısı kuruldu bulunamadı, durduruldu', 'error');
+        window.showToast('MJPEG bağlantısı kurulamadı, durduruldu', 'error');
         this.stopCamera();
         return;
       }
