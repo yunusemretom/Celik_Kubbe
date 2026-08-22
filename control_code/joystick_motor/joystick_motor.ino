@@ -80,6 +80,18 @@
 #define UDP_PORT    5005              // PC tarafindaki --udp-port ile ayni olmali
 #define MDNS_ADI    "celikkubbe"      // STA modunda "celikkubbe.local" olarak bulunur
 
+// ==================== TELEMETRI (YKI arayuzu) ====================
+// Kartin anlik durumu JSON olarak YKI backend'ine (YKI/backend/server.js)
+// UDP ile gonderilir; arayuzdeki telemetri sayfasi bunu canli gosterir.
+// Backend varsayilan olarak 5001'i dinler (yki_config.json > rpi.udpPort).
+//
+// HEDEF ADRES: "0.0.0.0" birakilirsa paket, komut gonderen PC'ye yollanir -
+// yani joyistik_control.py hangi bilgisayarda calisiyorsa oraya. YKI baska
+// bir makinede calisiyorsa buraya o makinenin IP'sini yazin.
+#define TELEMETRI_HZ     5            // saniyede kac paket. 0 = telemetri kapali
+#define TELEMETRI_PORT   5001
+#define TELEMETRI_IP     "0.0.0.0"
+
 // ==================== PINLER ====================
 #define STEP1_PIN 4
 #define DIR1_PIN  5
@@ -552,6 +564,55 @@ void durPiniGuncelle() {
 #endif
 }
 
+// ==================== TELEMETRI ====================
+// Kartin anlik durumunu JSON olarak YKI backend'ine yollar. Backend'in
+// telemetryBridge'i JSON bekledigi icin burada dogrudan JSON uretiyoruz;
+// boylece arayuz tarafinda ek bir ayristiriciya gerek kalmiyor.
+#if BAGLANTI_MODU && TELEMETRI_HZ > 0
+unsigned long telemetriSon = 0;
+unsigned long telemetriSeq = 0;
+
+void telemetriGonder() {
+  unsigned long simdi = millis();
+  if (simdi - telemetriSon < (1000UL / TELEMETRI_HZ)) return;
+  telemetriSon = simdi;
+
+  // Hedef: sabit IP verilmisse oraya, verilmemisse komutu gonderen PC'ye.
+  // Henuz komut gelmediyse ag yayin adresine gonderilir; boylece YKI, joystick
+  // yazilimi hic acilmadan da veri gorur.
+  IPAddress hedef;
+  if (!hedef.fromString(TELEMETRI_IP) || hedef == IPAddress(0, 0, 0, 0)) {
+  #if BAGLANTI_MODU == 2
+    hedef = pcPortu ? pcAdresi : WiFi.softAPBroadcastIP();
+  #else
+    hedef = pcPortu ? pcAdresi : WiFi.broadcastIP();
+  #endif
+  }
+
+#if BAGLANTI_MODU == 2
+  int rssi = 0;                       // AP modunda kartin kendi RSSI'si yok
+#else
+  int rssi = (int)WiFi.RSSI();
+#endif
+
+  // Arayuzun grafikleri "rssi" alanini kullanir; digerleri ham tabloda cikar.
+  char j[300];
+  snprintf(j, sizeof(j),
+    "{\"src\":\"esp\",\"seq\":%lu,\"uptime\":%lu,"
+    "\"m1_hiz\":%d,\"m2_hiz\":%d,\"m1_hedef\":%d,\"m2_hedef\":%d,"
+    "\"rt\":%.2f,\"atis_sayisi\":%lu,\"atis_pwm\":%d,\"atis_aktif\":%s,"
+    "\"stop\":%s,\"rssi\":%d,\"komut_yasi\":%lu}",
+    telemetriSeq++, simdi,
+    (int)m1.hiz, (int)m2.hiz, (int)m1.hedefHiz, (int)m2.hedefHiz,
+    atisRT, atisSayaci, (int)atisPwm, atisCaliyor ? "true" : "false",
+    durAktif ? "true" : "false", rssi, simdi - sonVeri);
+
+  udp.beginPacket(hedef, TELEMETRI_PORT);
+  udp.print(j);
+  udp.endPacket();
+}
+#endif  // BAGLANTI_MODU && TELEMETRI_HZ
+
 // ==================== SERI ====================
 // "0.42,-0.87\n" formatindaki satiri ayristirir.
 // Beklenen bicim: "<dikey>,<yatay>,<rt>\n"  or. "0.000,1.000,0.750"
@@ -684,6 +745,12 @@ void setup() {
 void loop() {
   // Durdurma butonu her seyden once okunur.
   durPiniGuncelle();
+
+#if BAGLANTI_MODU && TELEMETRI_HZ > 0
+  // YKI arayuzune anlik durum. Test modlarinda da calisir ki kablolama
+  // testi sirasinda da arayuzden izleyebilesin.
+  telemetriGonder();
+#endif
 
 #if TEST_MODU == 1
   // --- Kablolama testi: seri hat ve joystick olmadan calisir ---
